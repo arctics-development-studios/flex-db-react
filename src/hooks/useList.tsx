@@ -1,6 +1,12 @@
+/**
+ * React hooks for paginated listing of FlexDB items.
+ *
+ * @module
+ */
+
 // ─────────────────────────────────────────────
-//  FlexDB React SDK · useList
-//  Paginated list hook. Supports "load more" / infinite scroll.
+//  FlexDB React SDK · useList / useListHydrated
+//  Paginated list hooks with "load more" / infinite scroll.
 //  data accumulates across pages — never resets on fetchMore.
 // ─────────────────────────────────────────────
 
@@ -9,27 +15,52 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { useFlexDB }           from "../context.tsx";
 import type { PaginatedState } from "../core/types.tsx";
 
+/**
+ * Options for {@link useList}.
+ */
 export interface UseListOptions {
-  /** Namespace override. Falls back to the provider-level default. */
-  namespace?: string;
-  /** Items per page. Max 100. @default 20 */
-  limit?:     number;
   /**
-   * When `false`, the hook will NOT auto-fetch on mount.
+   * Namespace override for this hook.
+   * Falls back to the namespace set on {@link FlexDBProvider}.
+   */
+  namespace?: string;
+  /**
+   * Number of item keys to return per page.
+   * Max 100.
+   * @default 20
+   */
+  limit?: number;
+  /**
+   * When `false`, the hook will **not** auto-fetch on mount.
+   * Call `fetch()` manually to trigger the first page load.
+   *
+   * Useful when the list should only appear after a user action.
+   *
    * @default true
    */
-  enabled?:   boolean;
+  enabled?: boolean;
 }
 
 /**
- * Lists item **keys** (IDs) in the namespace with built-in pagination.
+ * Lists item **keys** (IDs) in the namespace with built-in cursor pagination.
  *
- * - `fetch()` resets to the first page and replaces `data`.
- * - `fetchMore()` appends the next page to existing `data`.
- * - `hasMore` tells you whether another page is available.
+ * - **Auto-fetches** the first page on mount (unless `enabled: false`).
+ * - `fetch()` resets to page 1 and **replaces** `data`.
+ * - `fetchMore()` fetches the next page and **appends** to `data`.
+ * - `hasMore` is `true` when more pages are available server-side.
+ * - `data` accumulates across `fetchMore` calls — it never resets between pages,
+ *   so infinite-scroll works without manual list management.
  *
- * @example
+ * When you need full item objects instead of just IDs, use
+ * {@link useListHydrated} (limit must be ≤ 20).
+ *
+ * @param options - Namespace, page size, and enabled flag. See {@link UseListOptions}.
+ * @returns {@link PaginatedState} with `data`, `loading`, `error`, `hasMore`, `fetch`, and `fetchMore`.
+ *
+ * @example Infinite scroll list
  * ```tsx
+ * import { useList } from "@arctics/flex-db-react";
+ *
  * function UserList() {
  *   const { data, loading, error, hasMore, fetchMore } = useList({
  *     namespace: "users",
@@ -42,10 +73,39 @@ export interface UseListOptions {
  *         {data?.map(id => <li key={id}>{id}</li>)}
  *       </ul>
  *       {loading  && <Spinner />}
- *       {error    && <p>{error.message}</p>}
- *       {hasMore  && <button onClick={fetchMore}>Load more</button>}
+ *       {error    && <p className="error">{error.message}</p>}
+ *       {hasMore  && (
+ *         <button onClick={fetchMore} disabled={loading}>Load more</button>
+ *       )}
  *     </>
  *   );
+ * }
+ * ```
+ *
+ * @example Manual refresh — re-fetch from page 1
+ * ```tsx
+ * function UserList() {
+ *   const { data, fetch, loading } = useList({ namespace: "users" });
+ *
+ *   return (
+ *     <>
+ *       <button onClick={fetch} disabled={loading}>↺ Refresh</button>
+ *       <ul>{data?.map(id => <li key={id}>{id}</li>)}</ul>
+ *     </>
+ *   );
+ * }
+ * ```
+ *
+ * @example Deferred load — fetch only when a tab is opened
+ * ```tsx
+ * function LazyTab({ active }: { active: boolean }) {
+ *   const { data, fetch } = useList({ namespace: "users", enabled: false });
+ *
+ *   useEffect(() => {
+ *     if (active) fetch();
+ *   }, [active, fetch]);
+ *
+ *   return <ul>{data?.map(id => <li key={id}>{id}</li>)}</ul>;
  * }
  * ```
  */
@@ -136,20 +196,56 @@ export function useList(options?: UseListOptions): PaginatedState<string> {
 //  Requires limit <= 20 (server constraint for optimal speed).
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Options for {@link useListHydrated}.
+ */
 export interface UseListHydratedOptions {
+  /**
+   * Namespace override for this hook.
+   * Falls back to the namespace set on {@link FlexDBProvider}.
+   */
   namespace?: string;
-  /** Max 20 (server constraint for hydrated responses). @default 20 */
-  limit?:     number;
-  enabled?:   boolean;
+  /**
+   * Number of full objects to return per page.
+   * **Maximum 20** — a server constraint for hydrated responses.
+   * Values above 20 are silently clamped to 20.
+   * @default 20
+   */
+  limit?: number;
+  /**
+   * When `false`, the hook will **not** auto-fetch on mount.
+   * Call `fetch()` manually to trigger the first page load.
+   * @default true
+   */
+  enabled?: boolean;
 }
 
 /**
- * Lists items and returns their full data (not just IDs).
- * The server only supports hydration when `limit` ≤ 20.
- * This constraint is not enforced in `useList` to allow larger batch sizes when hydration is not needed.
+ * Lists items and returns their **full data objects** (not just IDs).
  *
- * @example
+ * Identical behaviour to {@link useList} but each page item is
+ * `{ id: string; data: T | null }` instead of a bare string ID.
+ *
+ * The server only supports full-object hydration when `limit` ≤ 20.
+ * Values above 20 are **silently clamped** to 20.
+ *
+ * Supply the data type as a generic parameter for a fully-typed `data` field:
  * ```tsx
+ * const { data } = useListHydrated<User>({ namespace: "users" });
+ * // data is `{ id: string; data: User | null }[] | null`
+ * ```
+ *
+ * For larger page sizes where you only need keys, use {@link useList} instead.
+ *
+ * @param options - Namespace, page size (max 20), and enabled flag. See {@link UseListHydratedOptions}.
+ * @returns {@link PaginatedState} where each item is `{ id: string; data: T | null }`.
+ *
+ * @example Render a card grid with full item data
+ * ```tsx
+ * import { useListHydrated } from "@arctics/flex-db-react";
+ *
+ * interface User { name: string; avatarUrl: string; }
+ *
  * function UserCards() {
  *   const { data, loading, hasMore, fetchMore } = useListHydrated<User>({
  *     namespace: "users",
@@ -158,13 +254,26 @@ export interface UseListHydratedOptions {
  *
  *   return (
  *     <>
- *       {data?.map(({ id, data: user }) => (
- *         <UserCard key={id} user={user} />
- *       ))}
- *       {hasMore && <button onClick={fetchMore}>Load more</button>}
+ *       <div className="grid">
+ *         {data?.map(({ id, data: user }) => (
+ *           <UserCard key={id} id={id} user={user} />
+ *         ))}
+ *       </div>
+ *       {loading && <Spinner />}
+ *       {hasMore  && <button onClick={fetchMore}>Load more</button>}
  *     </>
  *   );
  * }
+ * ```
+ *
+ * @example Handle null data for concurrently-deleted items
+ * ```tsx
+ * const { data } = useListHydrated<User>({ namespace: "users" });
+ *
+ * // `data` may be null for an item that was deleted between listing and hydration
+ * data?.map(({ id, data: user }) =>
+ *   user ? <UserCard key={id} user={user} /> : <DeletedPlaceholder key={id} />
+ * );
  * ```
  */
 export function useListHydrated<T = unknown>(

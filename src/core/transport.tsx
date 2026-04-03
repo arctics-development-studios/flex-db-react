@@ -1,28 +1,82 @@
+/**
+ * Zero-dependency HTTP transport layer shared by the FlexDB React SDK.
+ *
+ * Handles URL construction, request serialisation, exponential-free retry
+ * logic, and error wrapping. This module is internal — all public
+ * functionality is exposed through {@link FlexDBClient} and the React hooks.
+ *
+ * @module
+ */
+
 // ─────────────────────────────────────────────
 //  FlexDB React SDK · Transport
-//  Identical retry logic to the base JS SDK.
-//  Zero dependencies — native fetch only.
+//  Zero-dependency fetch wrapper with retry and
+//  structured error handling.
 // ─────────────────────────────────────────────
 
 import { FlexDBError, FlexDBNetworkError, RetryConfig } from "./types.tsx";
 
+/**
+ * Descriptor for a single outgoing HTTP request.
+ * Consumed internally by {@link request} — not part of the public API.
+ */
 export interface RequestOptions {
+  /** HTTP method for this request. */
   method:   "GET" | "POST" | "PUT" | "DELETE";
+  /** Path appended to the client's `baseUrl`, e.g. `"/v1/list"`. */
   path:     string;
+  /**
+   * Additional headers merged on top of the default
+   * `Authorization` and `Content-Type` headers.
+   */
   headers?: Record<string, string>;
+  /** Request body. Serialised to JSON automatically. */
   body?:    unknown;
+  /**
+   * Query-string parameters appended to the URL.
+   * `undefined` values are omitted from the query string.
+   */
   query?:   Record<string, string | number | boolean | undefined>;
+  /**
+   * Optional `AbortSignal` for cancellation.
+   * When fired, the in-flight fetch is aborted and an `AbortError` is thrown.
+   * Retries are never attempted after an abort.
+   */
   signal?:  AbortSignal;
 }
 
+/**
+ * Default {@link RetryConfig} applied when no `retry` option is provided
+ * in {@link FlexDBConfig}.
+ *
+ * - `times: 3` — up to 3 retries after the first failure
+ * - `delay: 10` — 10 ms fixed delay between attempts
+ */
 export const DEFAULT_RETRY: RetryConfig = { times: 3, delay: 10 };
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// ── Internal helpers ───────────────────────────────────────────────────────
 
+/**
+ * Clamps the retry `times` value to the inclusive range `[0, 10]` and
+ * floors it to an integer, guarding against out-of-range user config.
+ *
+ * @param n - Raw retry count from user configuration.
+ * @returns Clamped integer in `[0, 10]`.
+ */
 function clampRetryTimes(n: number): number {
   return Math.min(Math.max(Math.floor(n), 0), 10);
 }
 
+/**
+ * Constructs a full request URL by joining `baseUrl` and `path`, then
+ * appending a URL-encoded query string from `query` (skipping `undefined`
+ * values).
+ *
+ * @param baseUrl - Client base URL. A trailing slash is stripped.
+ * @param path    - API path such as `"/v1/list"`.
+ * @param query   - Optional key-value query parameters.
+ * @returns Fully-formed URL string ready to pass to `fetch`.
+ */
 function buildUrl(
   baseUrl: string,
   path:    string,
@@ -43,10 +97,28 @@ function buildUrl(
   return url;
 }
 
+/**
+ * Returns a promise that resolves after `ms` milliseconds.
+ * Used to implement the fixed delay between retry attempts.
+ *
+ * @param ms - Duration in milliseconds.
+ */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Returns `true` for HTTP status codes that represent transient
+ * server-side conditions worth retrying.
+ *
+ * - `429` — rate limited
+ * - `5xx` — server error
+ *
+ * Client errors (`4xx` except `429`) are considered permanent and are never
+ * retried.
+ *
+ * @param status - HTTP response status code.
+ */
 function isRetryable(status: number): boolean {
   return status === 429 || status >= 500;
 }
@@ -54,8 +126,28 @@ function isRetryable(status: number): boolean {
 // ── Core request ───────────────────────────────────────────────────────────
 
 /**
- * Executes a fetch request with optional retry logic.
- * Identical contract to the base JS SDK transport.
+ * Executes a fetch request against the FlexDB API with optional retry logic.
+ *
+ * **Retry behaviour**
+ * - Network failures, HTTP `429`, and HTTP `5xx` responses are retried up to
+ *   `retry.times` additional times with a fixed `retry.delay` ms delay.
+ * - `AbortError` (component unmounted or signal fired) is rethrown immediately
+ *   without retrying.
+ * - HTTP `4xx` errors (except `429`) are thrown immediately as
+ *   {@link FlexDBError} without retrying.
+ *
+ * **Response parsing**
+ * - JSON is returned when the server sends `Content-Type: application/json`.
+ * - Empty responses (e.g. `204 No Content`) return `undefined`.
+ *
+ * @param baseUrl    - Base URL of the FlexDB service.
+ * @param authHeader - Pre-formatted `Authorization` header value, e.g. `"Bearer <token>"`.
+ * @param opts       - Request descriptor. See {@link RequestOptions}.
+ * @param retry      - Retry configuration, or `false` to make a single attempt.
+ * @returns The parsed JSON response body, typed as `T`.
+ *
+ * @throws {@link FlexDBError} When the server responds with a non-2xx status.
+ * @throws {@link FlexDBNetworkError} When `fetch` itself throws (DNS, connection refused, etc.).
  */
 export async function request<T = unknown>(
   baseUrl:    string,

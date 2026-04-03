@@ -2,18 +2,10 @@
   "name": "@arctics/flex-db-react",
   "version": "1.0.0",
   "exports": "./mod.ts",
+  "license": "Apache-2.0",
   "publish": {
-    "include": [
-      "src/**/*.ts",
-      "src/**/*.tsx", 
-      "mod.ts",
-      "README.md",
-      "LICENSE"
-    ],
-    "exclude": [
-      "src/**/*.test.ts",
-      "src/**/*.test.tsx"
-    ]
+    "include": ["src/**/*.ts", "src/**/*.tsx", "mod.ts", "README.md", "LICENSE"],
+    "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
   },
   "imports": {
     "react": "npm:react@^18.0.0",
