@@ -39,7 +39,7 @@ export interface FlexDBProviderProps {
   /**
    * Client configuration. See {@link FlexDBConfig} for all available options.
    *
-   * **Important:** define this object **outside** your component or memoize it
+   * **Important:** define this object **outside** your component or memoise it
    * with `useMemo`. An unstable reference (a new object on every render) causes
    * the provider to re-create its internal {@link FlexDBClient} on every render,
    * which resets all hook state in the tree.

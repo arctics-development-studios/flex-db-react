@@ -36,7 +36,7 @@ createRoot(document.getElementById("root")!).render(
 );
 ```
 
-> **Tip:** define `config` outside your component (or memoize it with `useMemo`). An unstable reference recreates the internal client on every render.
+> **Tip:** define `config` outside your component (or memoise it with `useMemo`). An unstable reference recreates the internal client on every render.
 
 ## Hooks at a glance
 

@@ -1,7 +1,7 @@
 /**
  * Zero-dependency HTTP transport layer shared by the FlexDB React SDK.
  *
- * Handles URL construction, request serialisation, exponential-free retry
+ * Handles URL construction, request serialisation, fixed-delay retry
  * logic, and error wrapping. This module is internal — all public
  * functionality is exposed through {@link FlexDBClient} and the React hooks.
  *

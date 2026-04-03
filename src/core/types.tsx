@@ -116,7 +116,7 @@ export interface FlexDBConfig {
    * Retry behaviour for transient request failures.
    * Pass `false` to disable retries entirely.
    * See {@link RetryConfig} for available options.
-   * @default \{ times: 3, delay: 10 \}
+   * @default { times: 3, delay: 10 }
    */
   retry?: RetryConfig | false;
 }

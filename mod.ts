@@ -1,5 +1,5 @@
 /**
- * # FlexDB React SDK — `@arctics/flex-db-react`
+ * # FlexDB React SDK
  *
  * React hooks and a context provider for **FlexDB** — a high-performance
  * distributed key-value store. Drop the provider in once, then read and
@@ -8,9 +8,15 @@
  * ## Installation
  *
  * ```ts
- * // deno.tsxon
+ * // deno.json
  * {
  *   "imports": {
+ *     "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^1.0.0"
+ *   }
+ * }
+ * // package.json
+ * {
+ *   "dependencies": {
  *     "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^1.0.0"
  *   }
  * }

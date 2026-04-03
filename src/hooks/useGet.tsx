@@ -125,7 +125,7 @@ export function useGet<T = unknown>(
   const namespace = options?.namespace;
 
   const [data,    setData]    = useState<T | null>(null);
-  const [loading, setLoading] = useState<boolean>(false);
+  const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState<UseGetState<T>["error"]>(null);
 
   // Stable ref so the fetch closure always sees the latest key/ns
