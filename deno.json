@@ -13,6 +13,6 @@
   },
   "compilerOptions": {
     "jsx": "react-jsx",
-    "jsxImportSource": "react"
+    "jsxImportSource": "npm:react@^18.0.0"
   }
 }

@@ -170,7 +170,7 @@ export function useList(options?: UseListOptions): PaginatedState<string> {
         hydrate:   false,
       });
 
-      setData(prev => [...(prev ?? []), ...response.ids]);
+      setData((prev: string[] | null) => [...(prev ?? []), ...response.ids]);
       setCursor(response.nextCursor);
       setHasMore(!!response.nextCursor);
     } catch (err) {
@@ -326,7 +326,7 @@ export function useListHydrated<T = unknown>(
         cursor:    cursorRef.current,
         hydrate:   true,
       });
-      setData(prev => [...(prev ?? []), ...response.items]);
+      setData((prev: { id: string; data: T | null }[] | null) => [...(prev ?? []), ...response.items]);
       setCursor(response.nextCursor);
       setHasMore(!!response.nextCursor);
     } catch (err) {
