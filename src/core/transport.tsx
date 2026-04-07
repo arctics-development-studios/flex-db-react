@@ -158,8 +158,7 @@ export async function request<T = unknown>(
   const url = buildUrl(baseUrl, opts.path, opts.query);
 
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    Authorization:  authHeader,
+    Authorization: authHeader,
     ...opts.headers,
   };
 
@@ -169,7 +168,10 @@ export async function request<T = unknown>(
     signal:  opts.signal,
   };
 
+  // Content-Type is only meaningful when there is a request body.
+  // Sending it on GET/DELETE requests (which have no body) is incorrect per HTTP spec.
   if (opts.body !== undefined) {
+    headers["Content-Type"] = "application/json";
     fetchInit.body = JSON.stringify(opts.body);
   }
 
@@ -197,12 +199,17 @@ export async function request<T = unknown>(
         errorBody = await response.text().catch(() => undefined);
       }
 
-      const message =
-        typeof errorBody === "object" &&
-        errorBody !== null &&
-        "error" in errorBody
-          ? String((errorBody as { error: unknown }).error)
-          : `HTTP ${response.status}`;
+      // Error envelope: { v, ok: false, error: { code, message, hint } }
+      // Extract the human-readable message from the nested error object.
+      const message = (() => {
+        if (typeof errorBody !== "object" || errorBody === null) return `HTTP ${response.status}`;
+        const e = (errorBody as Record<string, unknown>).error;
+        if (typeof e === "object" && e !== null && "message" in e) {
+          return String((e as Record<string, unknown>).message);
+        }
+        if (typeof e === "string") return e;
+        return `HTTP ${response.status}`;
+      })();
 
       const err = new FlexDBError(response.status, message, errorBody);
 
@@ -221,9 +228,7 @@ export async function request<T = unknown>(
       if (err instanceof Error && err.name === "AbortError") throw err;
 
       lastError = new FlexDBNetworkError(
-        `Request failed (attempt ${attempt}/${maxAttempts}): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `Network request failed: ${err instanceof Error ? err.message : String(err)}`,
         err,
       );
 

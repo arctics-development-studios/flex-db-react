@@ -145,12 +145,13 @@ export function useGet<T = unknown>(
 
       try {
         const response = await client.get<T>(currentKey, nsRef.current, signal);
-        setData(response.item);
+        setData(response.data);
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") return;
         setError(err as Error);
       } finally {
-        setLoading(false);
+        // Only clear loading if this request was not superseded by a newer one
+        if (!signal.aborted) setLoading(false);
       }
     },
     [client], // client is stable for the provider's lifetime

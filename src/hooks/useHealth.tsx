@@ -10,7 +10,7 @@
 //  and connection debugging during development.
 // ─────────────────────────────────────────────
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 import { useFlexDB }     from "../context.tsx";
 import type { HookState } from "../core/types.tsx";
@@ -91,21 +91,33 @@ export function useHealth(): UseHealthState {
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState<UseHealthState["error"]>(null);
 
-  const refetch = useCallback(async () => {
+  const abortRef = useRef<AbortController | null>(null);
+
+  const refetch = useCallback(() => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setLoading(true);
     setError(null);
-    try {
-      const result = await client.health();
-      setData(result);
-    } catch (err) {
-      setError(err as Error);
-    } finally {
-      setLoading(false);
-    }
+
+    client.health(controller.signal).then(
+      (result) => {
+        if (controller.signal.aborted) return;
+        setData(result);
+        setLoading(false);
+      },
+      (err: unknown) => {
+        if (err instanceof Error && err.name === "AbortError") return;
+        setError(err as Error);
+        setLoading(false);
+      },
+    );
   }, [client]);
 
   useEffect(() => {
     refetch();
+    return () => { abortRef.current?.abort(); };
   }, [refetch]);
 
   return { data, loading, error, refetch };

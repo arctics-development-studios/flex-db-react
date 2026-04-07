@@ -8,6 +8,7 @@
 //  FlexDB React SDK · useList / useListHydrated
 //  Paginated list hooks with "load more" / infinite scroll.
 //  data accumulates across pages — never resets on fetchMore.
+//  In-flight requests are cancelled on unmount and on new fetch.
 // ─────────────────────────────────────────────
 
 import { useState, useCallback, useRef, useEffect } from "react";
@@ -42,17 +43,19 @@ export interface UseListOptions {
 }
 
 /**
- * Lists item **keys** (IDs) in the namespace with built-in cursor pagination.
+ * Lists item **keys** in the namespace with built-in cursor pagination.
  *
  * - **Auto-fetches** the first page on mount (unless `enabled: false`).
- * - `fetch()` resets to page 1 and **replaces** `data`.
- * - `fetchMore()` fetches the next page and **appends** to `data`.
+ * - `fetch()` resets to page 1 and **replaces** `data`. Cancels any in-flight request.
+ * - `fetchMore()` fetches the next page and **appends** to `data`. Cancels any in-flight request.
  * - `hasMore` is `true` when more pages are available server-side.
  * - `data` accumulates across `fetchMore` calls — it never resets between pages,
  *   so infinite-scroll works without manual list management.
+ * - **Cancels** the in-flight request when the component unmounts, preventing
+ *   stale state updates on already-unmounted components.
  *
- * When you need full item objects instead of just IDs, use
- * {@link useListHydrated} (limit must be ≤ 20).
+ * When you need full item objects instead of just keys, use
+ * {@link useListHydrated} (limit must be ≤ 50).
  *
  * @param options - Namespace, page size, and enabled flag. See {@link UseListOptions}.
  * @returns {@link PaginatedState} with `data`, `loading`, `error`, `hasMore`, `fetch`, and `fetchMore`.
@@ -130,9 +133,18 @@ export function useList(options?: UseListOptions): PaginatedState<string> {
   const limitRef = useRef(limit);
   limitRef.current = limit;
 
+  // Holds the AbortController for the currently in-flight request.
+  // Shared between fetch and fetchMore — whichever starts last wins.
+  const abortRef = useRef<AbortController | null>(null);
+
   // ── Fetch first page ───────────────────────────────────────────────────────
 
   const fetch = useCallback(async () => {
+    // Cancel any previous in-flight request before starting a new one
+    abortRef.current?.abort();
+    const controller  = new AbortController();
+    abortRef.current  = controller;
+
     setLoading(true);
     setError(null);
 
@@ -142,15 +154,19 @@ export function useList(options?: UseListOptions): PaginatedState<string> {
         limit:     limitRef.current,
         cursor:    undefined, // always reset to page 1
         hydrate:   false,
+        signal:    controller.signal,
       });
 
-      setData(response.ids);
-      setCursor(response.nextCursor);
-      setHasMore(!!response.nextCursor);
+      setData(response.keys);
+      setCursor(response.cursor);
+      setHasMore(!!response.cursor);
     } catch (err) {
+      // Deliberate cancellation — do not surface as an error
+      if (err instanceof Error && err.name === "AbortError") return;
       setError(err as Error);
     } finally {
-      setLoading(false);
+      // Only clear loading if this request was not superseded by a newer one
+      if (!controller.signal.aborted) setLoading(false);
     }
   }, [client]);
 
@@ -158,6 +174,11 @@ export function useList(options?: UseListOptions): PaginatedState<string> {
 
   const fetchMore = useCallback(async () => {
     if (!cursorRef.current) return;
+
+    // Cancel any previous in-flight request before starting a new one
+    abortRef.current?.abort();
+    const controller  = new AbortController();
+    abortRef.current  = controller;
 
     setLoading(true);
     setError(null);
@@ -168,23 +189,26 @@ export function useList(options?: UseListOptions): PaginatedState<string> {
         limit:     limitRef.current,
         cursor:    cursorRef.current,
         hydrate:   false,
+        signal:    controller.signal,
       });
 
-      setData((prev: string[] | null) => [...(prev ?? []), ...response.ids]);
-      setCursor(response.nextCursor);
-      setHasMore(!!response.nextCursor);
+      setData((prev: string[] | null) => [...(prev ?? []), ...response.keys]);
+      setCursor(response.cursor);
+      setHasMore(!!response.cursor);
     } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") return;
       setError(err as Error);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   }, [client]);
 
-  // ── Auto-fetch on mount ────────────────────────────────────────────────────
+  // ── Auto-fetch on mount; cancel on unmount ─────────────────────────────────
 
   useEffect(() => {
     if (!enabled) return;
     fetch();
+    return () => { abortRef.current?.abort(); };
   }, [namespace, limit, enabled, fetch]);
 
   return { data, loading, error, cursor, hasMore, fetch, fetchMore };
@@ -192,8 +216,8 @@ export function useList(options?: UseListOptions): PaginatedState<string> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  useListHydrated
-//  Same as useList but returns full objects instead of IDs.
-//  Requires limit <= 20 (server constraint for optimal speed).
+//  Same as useList but returns full objects instead of keys.
+//  Requires limit <= 50 (server constraint for hydrated responses).
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -207,8 +231,8 @@ export interface UseListHydratedOptions {
   namespace?: string;
   /**
    * Number of full objects to return per page.
-   * **Maximum 20** — a server constraint for hydrated responses.
-   * Values above 20 are silently clamped to 20.
+   * **Maximum 50** — a server constraint for hydrated responses (`?full=true` is
+   * silently ignored when `limit` > 50). Values above 50 are silently clamped to 50.
    * @default 20
    */
   limit?: number;
@@ -221,24 +245,27 @@ export interface UseListHydratedOptions {
 }
 
 /**
- * Lists items and returns their **full data objects** (not just IDs).
+ * Lists items and returns their **full data objects** (not just keys).
  *
  * Identical behaviour to {@link useList} but each page item is
- * `{ id: string; data: T | null }` instead of a bare string ID.
+ * `{ key: string; data: T | null }` instead of a bare string key.
  *
- * The server only supports full-object hydration when `limit` ≤ 20.
- * Values above 20 are **silently clamped** to 20.
+ * The server only supports full-object hydration when `limit` ≤ 50.
+ * Values above 50 are **silently clamped** to 50.
+ *
+ * In-flight requests are cancelled on unmount and whenever `fetch()` or
+ * `fetchMore()` is called while a previous request is still in flight.
  *
  * Supply the data type as a generic parameter for a fully-typed `data` field:
  * ```tsx
  * const { data } = useListHydrated<User>({ namespace: "users" });
- * // data is `{ id: string; data: User | null }[] | null`
+ * // data is `{ key: string; data: User | null }[] | null`
  * ```
  *
  * For larger page sizes where you only need keys, use {@link useList} instead.
  *
- * @param options - Namespace, page size (max 20), and enabled flag. See {@link UseListHydratedOptions}.
- * @returns {@link PaginatedState} where each item is `{ id: string; data: T | null }`.
+ * @param options - Namespace, page size (max 50), and enabled flag. See {@link UseListHydratedOptions}.
+ * @returns {@link PaginatedState} where each item is `{ key: string; data: T | null }`.
  *
  * @example Render a card grid with full item data
  * ```tsx
@@ -255,8 +282,8 @@ export interface UseListHydratedOptions {
  *   return (
  *     <>
  *       <div className="grid">
- *         {data?.map(({ id, data: user }) => (
- *           <UserCard key={id} id={id} user={user} />
+ *         {data?.map(({ key, data: user }) => (
+ *           <UserCard key={key} id={key} user={user} />
  *         ))}
  *       </div>
  *       {loading && <Spinner />}
@@ -271,22 +298,22 @@ export interface UseListHydratedOptions {
  * const { data } = useListHydrated<User>({ namespace: "users" });
  *
  * // `data` may be null for an item that was deleted between listing and hydration
- * data?.map(({ id, data: user }) =>
- *   user ? <UserCard key={id} user={user} /> : <DeletedPlaceholder key={id} />
+ * data?.map(({ key, data: user }) =>
+ *   user ? <UserCard key={key} user={user} /> : <DeletedPlaceholder key={key} />
  * );
  * ```
  */
 export function useListHydrated<T = unknown>(
   options?: UseListHydratedOptions,
-): PaginatedState<{ id: string; data: T | null }> {
+): PaginatedState<{ key: string; data: T | null }> {
   const client    = useFlexDB();
   const namespace = options?.namespace;
-  const limit     = Math.min(options?.limit ?? 20, 20); // enforce server cap
+  const limit     = Math.min(options?.limit ?? 20, 50); // enforce server cap (limit ≤ 50 for hydrated)
   const enabled   = options?.enabled ?? true;
 
-  const [data,    setData]    = useState<{ id: string; data: T | null }[] | null>(null);
+  const [data,    setData]    = useState<{ key: string; data: T | null }[] | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState<PaginatedState<{ id: string; data: T | null }>["error"]>(null);
+  const [error,   setError]   = useState<PaginatedState<{ key: string; data: T | null }>["error"]>(null);
   const [cursor,  setCursor]  = useState<string | undefined>(undefined);
   const [hasMore, setHasMore] = useState(false);
 
@@ -294,8 +321,13 @@ export function useListHydrated<T = unknown>(
   cursorRef.current = cursor;
   const nsRef       = useRef(namespace);
   nsRef.current     = namespace;
+  const abortRef    = useRef<AbortController | null>(null);
 
   const fetch = useCallback(async () => {
+    abortRef.current?.abort();
+    const controller  = new AbortController();
+    abortRef.current  = controller;
+
     setLoading(true);
     setError(null);
     try {
@@ -304,19 +336,26 @@ export function useListHydrated<T = unknown>(
         limit,
         cursor:    undefined,
         hydrate:   true,
+        signal:    controller.signal,
       });
       setData(response.items);
-      setCursor(response.nextCursor);
-      setHasMore(!!response.nextCursor);
+      setCursor(response.cursor);
+      setHasMore(!!response.cursor);
     } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") return;
       setError(err as Error);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   }, [client, limit]);
 
   const fetchMore = useCallback(async () => {
     if (!cursorRef.current) return;
+
+    abortRef.current?.abort();
+    const controller  = new AbortController();
+    abortRef.current  = controller;
+
     setLoading(true);
     setError(null);
     try {
@@ -325,20 +364,23 @@ export function useListHydrated<T = unknown>(
         limit,
         cursor:    cursorRef.current,
         hydrate:   true,
+        signal:    controller.signal,
       });
-      setData((prev: { id: string; data: T | null }[] | null) => [...(prev ?? []), ...response.items]);
-      setCursor(response.nextCursor);
-      setHasMore(!!response.nextCursor);
+      setData((prev: { key: string; data: T | null }[] | null) => [...(prev ?? []), ...response.items]);
+      setCursor(response.cursor);
+      setHasMore(!!response.cursor);
     } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") return;
       setError(err as Error);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   }, [client, limit]);
 
   useEffect(() => {
     if (!enabled) return;
     fetch();
+    return () => { abortRef.current?.abort(); };
   }, [namespace, limit, enabled, fetch]);
 
   return { data, loading, error, cursor, hasMore, fetch, fetchMore };

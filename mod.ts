@@ -11,13 +11,13 @@
  * // deno.json
  * {
  *   "imports": {
- *     "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^1.0.0"
+ *     "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^1.1.0"
  *   }
  * }
  * // package.json
  * {
  *   "dependencies": {
- *     "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^1.0.0"
+ *     "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^1.1.0"
  *   }
  * }
  * ```
@@ -129,12 +129,12 @@
  * }
  * ```
  *
- * Use `useListHydrated` to receive full objects instead of just IDs
- * (`limit` must be ≤ 20 — server constraint):
+ * Use `useListHydrated` to receive full objects instead of just keys
+ * (`limit` must be ≤ 50 — server constraint):
  *
  * ```tsx
  * const { data } = useListHydrated<User>({ limit: 20 });
- * data?.map(({ id, data: user }) => <UserCard key={id} user={user} />);
+ * data?.map(({ key, data: user }) => <UserCard key={key} user={user} />);
  * ```
  *
  * ## Reactive search — `useSearch` / `useSearchHydrated`
@@ -194,8 +194,8 @@
  *   const client = useFlexDB();
  *
  *   const handleAction = async () => {
- *     const { item } = await client.get<User>("abc123");
- *     console.log(item.name);
+ *     const { data } = await client.get<User>("abc123");
+ *     console.log(data.name);
  *   };
  * }
  * ```

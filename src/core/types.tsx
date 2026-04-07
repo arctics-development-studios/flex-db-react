@@ -186,22 +186,49 @@ export type SearchParams = Record<string, SearchParamValue>;
  * ```
  */
 export interface FilterOperators {
-  /** Exact match — equivalent to `field === value`. */
-  eq?:  SearchParamValue;
-  /** Not equal — equivalent to `field !== value`. */
-  neq?: SearchParamValue;
-  /** Greater than — equivalent to `field > value`. */
-  gt?:  SearchParamValue;
-  /** Greater than or equal — equivalent to `field >= value`. */
-  gte?: SearchParamValue;
-  /** Less than — equivalent to `field < value`. */
-  lt?:  SearchParamValue;
-  /** Less than or equal — equivalent to `field <= value`. */
-  lte?: SearchParamValue;
-  /** String contains (substring check) or array includes the given value. */
-  inc?: SearchParamValue;
-  /** String starts with the given prefix. */
-  sw?:  SearchParamValue;
+  /**
+   * Exact equality — `field = value`.
+   * Accepts any scalar: string, number, boolean, or null.
+   */
+  eq?:  string | number | boolean | null;
+  /**
+   * Not equal — `field <> value`.
+   * Accepts any scalar: string, number, boolean, or null.
+   */
+  neq?: string | number | boolean | null;
+  /**
+   * Greater than — `field > value`.
+   * Accepts numbers or strings (lexicographic for strings).
+   */
+  gt?:  number | string;
+  /**
+   * Greater than or equal — `field >= value`.
+   * Accepts numbers or strings (lexicographic for strings).
+   */
+  gte?: number | string;
+  /**
+   * Less than — `field < value`.
+   * Accepts numbers or strings (lexicographic for strings).
+   */
+  lt?:  number | string;
+  /**
+   * Less than or equal — `field <= value`.
+   * Accepts numbers or strings (lexicographic for strings).
+   */
+  lte?: number | string;
+  /**
+   * Contains — `contains(field, value)`.
+   * Checks that a string field contains the given substring,
+   * or that a set/array field includes the given element.
+   * Value must be a string.
+   */
+  inc?: string;
+  /**
+   * Starts with — `begins_with(field, value)`.
+   * Checks that a string field begins with the given prefix.
+   * Value must be a string.
+   */
+  sw?:  string;
   /**
    * Attribute existence check.
    * `true` → field must exist; `false` → field must not exist.
@@ -245,7 +272,8 @@ export type Filters = Record<string, FilterOperators>;
  * ```
  */
 export interface CreateResponse {
-  success: true;
+  v: 1;
+  ok: true;
   /**
    * Server-generated NanoID key for the newly created item.
    * Store this — it is the only way to retrieve or delete the item later.
@@ -264,7 +292,8 @@ export interface CreateResponse {
  * ```
  */
 export interface SetResponse {
-  success: true;
+  v: 1;
+  ok: true;
   /** The caller-supplied key used to store the item. */
   key: string;
 }
@@ -273,13 +302,14 @@ export interface SetResponse {
  * Raw server response shape for a single-item fetch.
  * Surfaced as `data` in the {@link UseGetState} returned by {@link useGet}.
  *
- * Note: `useGet` unwraps `.item` automatically — your component receives
+ * Note: `useGet` unwraps `.data` automatically — your component receives
  * `data` typed as `T`, not `GetResponse<T>`.
  */
 export interface GetResponse<T = unknown> {
-  success: true;
-  /** The stored item, deserialised as type `T`. */
-  item: T;
+  v: 1;
+  ok: true;
+  /** The stored value, deserialised as type `T`. */
+  data: T;
 }
 
 /**
@@ -289,41 +319,52 @@ export interface GetResponse<T = unknown> {
  * ```tsx
  * const { execute, data } = useDelete();
  * await execute({ key: "user-42" });
- * console.log(data?.success); // true
+ * console.log(data?.ok); // true
  * ```
  */
 export interface DeleteResponse {
-  success: true;
+  v: 1;
+  ok: true;
 }
 
 /**
- * Raw server response for list/search operations that return only item IDs.
+ * Raw server response for list/search operations that return only item keys.
  * Surfaced as `data` (array of strings) and `cursor`/`hasMore` in
  * {@link PaginatedState} returned by {@link useList} and {@link useSearch}.
  */
 export interface ListIdsResponse {
-  /** Array of item keys on this page. */
-  ids: string[];
+  v: 1;
+  ok: true;
+  /** Array of object keys on this page. */
+  keys: string[];
+  /** Number of keys returned on this page. Equivalent to `keys.length`. */
+  count: number;
   /**
+   * Opaque pagination token. Present only when more pages exist.
    * Pass as `cursor` on the next call to fetch the next page.
-   * `undefined` means this is the last page.
+   * Absent when this is the last page.
    */
-  nextCursor?: string;
+  cursor?: string;
 }
 
 /**
  * Raw server response for list/search operations that return full item objects.
- * Surfaced as `data` (array of `{ id, data }`) in {@link PaginatedState}
+ * Surfaced as `data` (array of `{ key, data }`) in {@link PaginatedState}
  * returned by {@link useListHydrated} and {@link useSearchHydrated}.
  */
 export interface ListItemsResponse<T = unknown> {
-  /** Array of `{ id, data }` pairs. `data` may be `null` if an item was concurrently deleted. */
-  items: { id: string; data: T | null }[];
+  v: 1;
+  ok: true;
+  /** Array of `{ key, data }` pairs. `data` may be `null` if an item was concurrently deleted. */
+  items: { key: string; data: T | null }[];
+  /** Number of items returned on this page. Equivalent to `items.length`. */
+  count: number;
   /**
+   * Opaque pagination token. Present only when more pages exist.
    * Pass as `cursor` on the next call to fetch the next page.
-   * `undefined` means this is the last page.
+   * Absent when this is the last page.
    */
-  nextCursor?: string;
+  cursor?: string;
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -332,24 +373,57 @@ export interface ListItemsResponse<T = unknown> {
  * Thrown (and surfaced as `error`) when the FlexDB server returns a non-2xx
  * HTTP response.
  *
- * Inspect {@link FlexDBError.status} for the HTTP status code and
- * {@link FlexDBError.body} for the raw error payload from the server.
+ * The server error envelope is `{ error: { code, message, hint } }`. All three
+ * fields are promoted to direct properties so you never need to cast `.body`.
  *
- * @example Narrow the error type in a component
+ * | Property   | What it contains                                              |
+ * |------------|---------------------------------------------------------------|
+ * | `message`  | Human-readable description of the error.                     |
+ * | `code`     | Stable `ERR_*` constant — **branch on this, not `message`**. |
+ * | `hint`     | Actionable suggestion for fixing the problem.                 |
+ * | `status`   | HTTP status code (401, 403, 404, 429, 500 …).                |
+ * | `body`     | Raw server response body for advanced inspection.            |
+ *
+ * @example Branch on the stable error code
  * ```tsx
  * import { FlexDBError } from "@arctics/flex-db-react";
  *
  * const { error } = useGet("some-key");
  *
  * if (error instanceof FlexDBError) {
- *   if (error.status === 404) return <p>Not found</p>;
- *   if (error.status === 401) return <p>Unauthorised</p>;
- *   return <p>Server error {error.status}</p>;
+ *   switch (error.code) {
+ *     case "ERR_NOT_FOUND":      return <p>Item does not exist.</p>;
+ *     case "ERR_UNAUTHORIZED":   return <p>Session expired — please log in again.</p>;
+ *     case "ERR_RATE_LIMIT_SECOND":
+ *     case "ERR_RATE_LIMIT_MONTH": return <p>Too many requests. {error.hint}</p>;
+ *     default:                   return <p>Error: {error.message}</p>;
+ *   }
+ * }
+ * ```
+ *
+ * @example Surface the hint to the developer during debugging
+ * ```tsx
+ * if (error instanceof FlexDBError) {
+ *   console.error(`[FlexDB ${error.code}] ${error.message}`);
+ *   if (error.hint) console.info(`Hint: ${error.hint}`);
  * }
  * ```
  */
 export class FlexDBError extends Error {
+  /** HTTP status code (401, 403, 404, 429, 500 …). */
   readonly status: number;
+  /**
+   * Stable `ERR_*` string constant from the server.
+   * Use this for branching — it never changes across server versions.
+   * Falls back to `"ERR_UNKNOWN"` if the server did not include a code.
+   */
+  readonly code: string;
+  /**
+   * Actionable suggestion provided by the server for fixing the problem.
+   * `undefined` when the server did not include a hint.
+   */
+  readonly hint: string | undefined;
+  /** Raw server response body for advanced inspection or logging. */
   readonly body: unknown;
 
   constructor(status: number, message: string, body?: unknown) {
@@ -357,6 +431,14 @@ export class FlexDBError extends Error {
     this.name   = "FlexDBError";
     this.status = status;
     this.body   = body;
+
+    // Promote code and hint from the server envelope to direct properties
+    const e = (typeof body === "object" && body !== null)
+      ? (body as Record<string, unknown>).error
+      : undefined;
+    const obj = (typeof e === "object" && e !== null) ? e as Record<string, unknown> : undefined;
+    this.code = typeof obj?.code === "string" ? obj.code : "ERR_UNKNOWN";
+    this.hint = typeof obj?.hint === "string" ? obj.hint : undefined;
   }
 }
 
@@ -365,17 +447,25 @@ export class FlexDBError extends Error {
  * a response is received — for example, due to a DNS failure, connection
  * refused, or a network timeout.
  *
- * The original error from `fetch` is available as {@link FlexDBNetworkError.cause}.
+ * `message` is a plain-English description such as:
+ * `"Network request failed: Failed to fetch"`.
+ *
+ * The original low-level error from `fetch` is available as
+ * {@link FlexDBNetworkError.cause} for deeper inspection.
  *
  * @example
  * ```tsx
- * import { FlexDBNetworkError } from "@arctics/flex-db-react";
+ * import { FlexDBError, FlexDBNetworkError } from "@arctics/flex-db-react";
  *
  * const { error } = useGet("some-key");
  *
  * if (error instanceof FlexDBNetworkError) {
- *   console.error("Network error:", error.message);
- *   console.error("Caused by:", error.cause);
+ *   // User-visible: "Could not reach the server. Check your connection."
+ *   console.error(error.message); // "Network request failed: Failed to fetch"
+ * } else if (error instanceof FlexDBError) {
+ *   // Server responded with an error
+ *   console.error(`[${error.code}] ${error.message}`); // "[ERR_NOT_FOUND] No object exists with this key."
+ *   if (error.hint) console.info(error.hint);
  * }
  * ```
  */

@@ -45,7 +45,7 @@ import type {
  *
  * function MyComponent() {
  *   const client = useFlexDB();
- *   const { item } = await client.get<User>("abc123");
+ *   const { data } = await client.get<User>("abc123");
  * }
  * ```
  *
@@ -102,13 +102,8 @@ export class FlexDBClient {
   }
 
   /** Central request dispatcher — keeps individual method call-sites clean. */
-  #req<T>(opts: RequestOptions, ns?: string, signal?: AbortSignal): Promise<T> {
-    return request<T>(
-      this.#baseUrl,
-      this.#authHeader,
-      { ...opts, signal },
-      this.#retry,
-    );
+  #req<T>(opts: RequestOptions): Promise<T> {
+    return request<T>(this.#baseUrl, this.#authHeader, opts, this.#retry);
   }
 
   // ── Health ─────────────────────────────────────────────────────────────────
@@ -129,7 +124,7 @@ export class FlexDBClient {
    * ```
    */
   health(signal?: AbortSignal): Promise<{ status: string }> {
-    return this.#req({ method: "GET", path: "/health" }, undefined, signal);
+    return this.#req({ method: "GET", path: "/health", signal });
   }
 
   // ── Create ─────────────────────────────────────────────────────────────────
@@ -141,7 +136,7 @@ export class FlexDBClient {
    * use {@link set} instead.
    *
    * To make the item queryable, pass `searchParams` with the fields you want
-   * to index. They are stored separately from `value` and power all
+   * to index. They are stored separately from `data` and power all
    * {@link search} queries.
    *
    * Prefer the {@link useCreate} hook in React components.
@@ -150,7 +145,7 @@ export class FlexDBClient {
    * @param namespace    - Namespace override. Falls back to the client-level default.
    * @param searchParams - Fields to index for future search queries.
    * @param signal       - Optional `AbortSignal` for cancellation.
-   * @returns `{ success: true, key }` — store the `key`, it is the only way to retrieve this item.
+   * @returns `{ v: 1, ok: true, key }` — store the `key`, it is the only way to retrieve this item.
    *
    * @throws {@link FlexDBError} On non-2xx server responses.
    * @throws {@link FlexDBNetworkError} When the request fails to reach the server.
@@ -172,13 +167,13 @@ export class FlexDBClient {
     signal?:       AbortSignal,
   ): Promise<CreateResponse> {
     const headers: Record<string, string> = { "X-Namespace": this.#ns(namespace) };
-    if (searchParams) headers["X-Search-Params"] = JSON.stringify(searchParams);
 
-    return this.#req(
-      { method: "POST", path: "/v1", headers, body: value },
-      namespace,
-      signal,
-    );
+    const body = {
+      data: value,
+      ...(searchParams && { metadata: searchParams }),
+    };
+
+    return this.#req({ method: "POST", path: "/v1", headers, body, signal });
   }
 
   // ── Get ────────────────────────────────────────────────────────────────────
@@ -189,8 +184,8 @@ export class FlexDBClient {
    * Supply the data type as a generic parameter to get a fully-typed result:
    *
    * ```ts
-   * const { item } = await client.get<User>("abc123");
-   * console.log(item.name); // TypeScript knows `name` is a string
+   * const { data } = await client.get<User>("abc123");
+   * console.log(data.name); // TypeScript knows `name` is a string
    * ```
    *
    * Prefer the {@link useGet} hook in React components — it auto-fetches on
@@ -200,7 +195,7 @@ export class FlexDBClient {
    * @param key       - The key returned by {@link create} or passed to {@link set}.
    * @param namespace - Namespace override. Falls back to the client-level default.
    * @param signal    - Optional `AbortSignal` for cancellation.
-   * @returns `{ success: true, item: T }`.
+   * @returns `{ v: 1, ok: true, data: T }`.
    *
    * @throws {@link FlexDBError} with `status === 404` if the key does not exist.
    * @throws {@link FlexDBError} with `status === 401` if the API key is invalid.
@@ -208,8 +203,8 @@ export class FlexDBClient {
    *
    * @example
    * ```ts
-   * const { item } = await client.get<User>("abc123", "users");
-   * console.log(item.name, item.age);
+   * const { data } = await client.get<User>("abc123", "users");
+   * console.log(data.name, data.age);
    * ```
    */
   get<T = unknown>(
@@ -217,15 +212,12 @@ export class FlexDBClient {
     namespace?: string,
     signal?:    AbortSignal,
   ): Promise<GetResponse<T>> {
-    return this.#req(
-      {
-        method:  "GET",
-        path:    `/v1/${encodeURIComponent(key)}`,
-        headers: { "X-Namespace": this.#ns(namespace) },
-      },
-      namespace,
+    return this.#req({
+      method:  "GET",
+      path:    `/v1/${encodeURIComponent(key)}`,
+      headers: { "X-Namespace": this.#ns(namespace) },
       signal,
-    );
+    });
   }
 
   // ── Set ────────────────────────────────────────────────────────────────────
@@ -247,7 +239,7 @@ export class FlexDBClient {
    * @param namespace    - Namespace override. Falls back to the client-level default.
    * @param searchParams - Fields to index for future search queries.
    * @param signal       - Optional `AbortSignal` for cancellation.
-   * @returns `{ success: true, key }`.
+   * @returns `{ v: 1, ok: true, key }`.
    *
    * @throws {@link FlexDBError} On non-2xx server responses.
    * @throws {@link FlexDBNetworkError} When the request fails to reach the server.
@@ -270,18 +262,13 @@ export class FlexDBClient {
     signal?:       AbortSignal,
   ): Promise<SetResponse> {
     const headers: Record<string, string> = { "X-Namespace": this.#ns(namespace) };
-    if (searchParams) headers["X-Search-Params"] = JSON.stringify(searchParams);
 
-    return this.#req(
-      {
-        method:  "PUT",
-        path:    `/v1/${encodeURIComponent(key)}`,
-        headers,
-        body:    value,
-      },
-      namespace,
-      signal,
-    );
+    const body = {
+      data: value,
+      ...(searchParams && { metadata: searchParams }),
+    };
+
+    return this.#req({ method: "PUT", path: `/v1/${encodeURIComponent(key)}`, headers, body, signal });
   }
 
   // ── Delete ─────────────────────────────────────────────────────────────────
@@ -297,7 +284,7 @@ export class FlexDBClient {
    * @param key       - The key of the item to delete.
    * @param namespace - Namespace override. Falls back to the client-level default.
    * @param signal    - Optional `AbortSignal` for cancellation.
-   * @returns `{ success: true }`.
+   * @returns `{ v: 1, ok: true }`.
    *
    * @throws {@link FlexDBError} with `status === 404` if the key does not exist.
    * @throws {@link FlexDBNetworkError} When the request fails to reach the server.
@@ -312,15 +299,12 @@ export class FlexDBClient {
     namespace?: string,
     signal?:    AbortSignal,
   ): Promise<DeleteResponse> {
-    return this.#req(
-      {
-        method:  "DELETE",
-        path:    `/v1/${encodeURIComponent(key)}`,
-        headers: { "X-Namespace": this.#ns(namespace) },
-      },
-      namespace,
+    return this.#req({
+      method:  "DELETE",
+      path:    `/v1/${encodeURIComponent(key)}`,
+      headers: { "X-Namespace": this.#ns(namespace) },
       signal,
-    );
+    });
   }
 
   // ── List ───────────────────────────────────────────────────────────────────
@@ -333,18 +317,18 @@ export class FlexDBClient {
    *
    * @param opts.namespace - Namespace override.
    * @param opts.limit     - Items per page. Max 100. Defaults to 20.
-   * @param opts.cursor    - Pagination cursor from the previous response's `nextCursor`.
+   * @param opts.cursor    - Pagination cursor from the previous response's `cursor`.
    * @param opts.hydrate   - Must be `false` or omitted for this overload.
    * @param opts.signal    - Optional `AbortSignal` for cancellation.
-   * @returns `{ ids: string[], nextCursor?: string }`.
+   * @returns `{ v: 1, ok: true, keys: string[], count: number, cursor?: string }`.
    *
    * @example Manual cursor pagination
    * ```ts
    * let cursor: string | undefined;
    * do {
    *   const result = await client.list({ namespace: "users", limit: 50, cursor });
-   *   console.log(result.ids);
-   *   cursor = result.nextCursor;
+   *   console.log(result.keys);
+   *   cursor = result.cursor;
    * } while (cursor);
    * ```
    */
@@ -359,19 +343,19 @@ export class FlexDBClient {
   /**
    * Lists items in the namespace, returning their **full data objects**.
    *
-   * Requires `limit` ≤ 20 (server constraint for hydrated responses).
-   * Each result entry is `{ id: string; data: T | null }`.
+   * Requires `limit` ≤ 50 (server constraint for hydrated responses).
+   * Each result entry is `{ key: string; data: T | null }`.
    *
    * Prefer the {@link useListHydrated} hook in React components.
    *
    * @param opts.hydrate - Must be `true` for this overload.
-   * @param opts.limit   - Must be ≤ 20 when `hydrate` is `true`.
-   * @returns `{ items: { id, data }[], nextCursor?: string }`.
+   * @param opts.limit   - Must be ≤ 50 when `hydrate` is `true`.
+   * @returns `{ v: 1, ok: true, items: { key, data }[], count: number, cursor?: string }`.
    *
    * @example
    * ```ts
    * const { items } = await client.list<User>({ namespace: "users", hydrate: true, limit: 20 });
-   * for (const { id, data } of items) console.log(id, data?.name);
+   * for (const { key, data } of items) console.log(key, data?.name);
    * ```
    */
   list<T>(opts: {
@@ -390,18 +374,15 @@ export class FlexDBClient {
     signal?:    AbortSignal;
   }): Promise<ListIdsResponse | ListItemsResponse<T>> {
     const headers: Record<string, string> = { "X-Namespace": this.#ns(opts.namespace) };
-    if (opts.hydrate) headers["X-Full-Object"] = "true";
 
     const query: Record<string, string | number | boolean | undefined> = {
       limit:  opts.limit,
       cursor: opts.cursor,
+      // Hydrated responses are enabled via ?full=true (server requires limit ≤ 50)
+      ...(opts.hydrate ? { full: "true" } : {}),
     };
 
-    return this.#req(
-      { method: "GET", path: "/v1/list", headers, query },
-      opts.namespace,
-      opts.signal,
-    );
+    return this.#req({ method: "GET", path: "/v1/list", headers, query, signal: opts.signal });
   }
 
   // ── Search ─────────────────────────────────────────────────────────────────
@@ -418,14 +399,14 @@ export class FlexDBClient {
    * @param opts.filters   - Filter expressions evaluated server-side. See {@link Filters}.
    * @param opts.namespace - Namespace override.
    * @param opts.limit     - Items per page. Max 100. Defaults to 20.
-   * @param opts.cursor    - Pagination cursor from the previous response's `nextCursor`.
+   * @param opts.cursor    - Pagination cursor from the previous response's `cursor`.
    * @param opts.hydrate   - Must be `false` or omitted for this overload.
    * @param opts.signal    - Optional `AbortSignal` for cancellation.
-   * @returns `{ ids: string[], nextCursor?: string }`.
+   * @returns `{ v: 1, ok: true, keys: string[], count: number, cursor?: string }`.
    *
    * @example
    * ```ts
-   * const { ids } = await client.search({
+   * const { keys } = await client.search({
    *   namespace: "products",
    *   filters:   { price: { gte: 10, lte: 100 }, category: { eq: "books" } },
    * });
@@ -443,13 +424,13 @@ export class FlexDBClient {
   /**
    * Searches indexed items and returns their **full data objects**.
    *
-   * Requires `limit` ≤ 20 (server constraint for hydrated responses).
+   * Requires `limit` ≤ 50 (server constraint for hydrated responses).
    *
    * Prefer the {@link useSearchHydrated} hook in React components.
    *
    * @param opts.hydrate - Must be `true` for this overload.
-   * @param opts.limit   - Must be ≤ 20 when `hydrate` is `true`.
-   * @returns `{ items: { id, data }[], nextCursor?: string }`.
+   * @param opts.limit   - Must be ≤ 50 when `hydrate` is `true`.
+   * @returns `{ v: 1, ok: true, items: { key, data }[], count: number, cursor?: string }`.
    *
    * @example
    * ```ts
@@ -459,7 +440,7 @@ export class FlexDBClient {
    *   hydrate:   true,
    *   limit:     10,
    * });
-   * for (const { id, data } of items) console.log(id, data?.title);
+   * for (const { key, data } of items) console.log(key, data?.title);
    * ```
    */
   search<T>(opts: {
@@ -480,17 +461,17 @@ export class FlexDBClient {
     signal?:    AbortSignal;
   }): Promise<ListIdsResponse | ListItemsResponse<T>> {
     const headers: Record<string, string> = { "X-Namespace": this.#ns(opts.namespace) };
-    if (opts.hydrate) headers["X-Full-Object"] = "true";
+
+    // Body contains only the filters map — hydration is a query param, not a body field
+    const body = { filters: opts.filters };
 
     const query: Record<string, string | number | boolean | undefined> = {
       limit:  opts.limit,
       cursor: opts.cursor,
+      // Hydrated responses are enabled via ?full=true (server requires limit ≤ 50)
+      ...(opts.hydrate ? { full: "true" } : {}),
     };
 
-    return this.#req(
-      { method: "POST", path: "/v1/search", headers, query, body: opts.filters },
-      opts.namespace,
-      opts.signal,
-    );
+    return this.#req({ method: "POST", path: "/v1/search", headers, query, body, signal: opts.signal });
   }
 }
