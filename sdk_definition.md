@@ -1,7 +1,7 @@
 # FlexDB React SDK — Definition
 
 **Package:** `@arctics/flex-db-react`  
-**Version:** 1.1.2  
+**Version:** 2.2.0  
 **Audience:** Web documentation authors and SDK integrators  
 **Purpose:** Complete reference for all hooks, configuration, error types, and behavioural edge cases.
 
@@ -16,20 +16,26 @@
    - [useGet](#useget)
    - [useList](#uselist)
    - [useListHydrated](#uselisthydrated)
-   - [useSearch](#usearch)
+   - [useSearch](#usesearch)
    - [useSearchHydrated](#usesearchhydrated)
    - [useHealth](#usehealth)
 5. [Hooks — Mutate](#5-hooks--mutate)
    - [useCreate](#usecreate)
-   - [useSet](#uset)
+   - [useSet](#useset)
    - [useDelete](#usedelete)
-6. [Direct Client Access](#6-direct-client-access)
-7. [Search Filter Operators](#7-search-filter-operators)
-8. [Error Reference](#8-error-reference)
-9. [Pagination](#9-pagination)
-10. [Request Cancellation](#10-request-cancellation)
-11. [Retry Behaviour](#11-retry-behaviour)
-12. [Namespace Resolution](#12-namespace-resolution)
+   - [useUpdateOne](#useupdateone)
+   - [useUpdate](#useupdate)
+6. [Hooks — Bulk](#6-hooks--bulk)
+   - [useBulkCreate](#usebulkcreate)
+   - [useBulkSet](#usebulkset)
+   - [useBulkDelete](#usebulkdelete)
+7. [Direct Client Access](#7-direct-client-access)
+8. [Search Filter Operators](#8-search-filter-operators)
+9. [Error Reference](#9-error-reference)
+10. [Pagination](#10-pagination)
+11. [Request Cancellation](#11-request-cancellation)
+12. [Retry Behaviour](#12-retry-behaviour)
+13. [Namespace Resolution](#13-namespace-resolution)
 
 ---
 
@@ -41,7 +47,7 @@
 // deno.json
 {
   "imports": {
-    "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^1.1.0"
+    "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^2.2.0"
   }
 }
 ```
@@ -56,7 +62,7 @@ import { FlexDBProvider, useGet } from "@arctics/flex-db-react";
 // package.json
 {
   "dependencies": {
-    "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^1.1.0"
+    "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^2.2.0"
   }
 }
 ```
@@ -344,7 +350,7 @@ Same shape as `useList`, but each element in `data` is `{ key: string; data: T |
 
 | Scenario | Behaviour |
 |---|---|
-| `limit` > 50 | Silently clamped to 50 by the SDK before the request is made. The server also silently ignores `?full=true` when `limit > 50`. |
+| `limit` > 50 | Silently clamped to 50 by the SDK before the request is made. |
 | Item deleted between listing and hydration | Server returns `{ key, data: null }`. The item still appears in `data` with `data: null`. |
 
 ```tsx
@@ -391,7 +397,7 @@ function useSearch(
 
 | Parameter | Type | Description |
 |---|---|---|
-| `filters` | `Filters` | Filter predicates evaluated server-side. See [Section 7](#7-search-filter-operators). Watched by **reference equality** — stabilise with `useMemo`. |
+| `filters` | `Filters` | Filter predicates evaluated server-side. See [Section 8](#8-search-filter-operators). Watched by **reference equality** — stabilise with `useMemo`. |
 | `options.namespace` | `string` | Namespace override. Falls back to the provider default. |
 | `options.limit` | `number` | Keys per page. Max 100. Defaults to 20. |
 | `options.enabled` | `boolean` | When `false`, the hook will not auto-run on mount or when `filters` changes. Defaults to `true`. |
@@ -422,8 +428,8 @@ const filters = { price: { gte: minPrice } };
 
 | Scenario | Behaviour |
 |---|---|
-| `filters` is `{}` (empty object) | Server returns an empty result array. This is a data-leak protection measure — unfiltered scans are not permitted via search. |
-| `filters` changes while a request is in-flight | Old request is aborted. New request starts with fresh filters from page 1. `data` is replaced with the new first page. |
+| `filters` is `{}` (empty object) | Server returns an empty result array. Unfiltered scans are not permitted via search. |
+| `filters` changes while a request is in-flight | Old request is aborted. New request starts with fresh filters from page 1. `data` is replaced. |
 | `enabled` is `false` | Hook does not auto-run. Call `fetch()` manually to trigger the first search. |
 | All filter operators are unrecognised | Server returns an empty array. |
 
@@ -544,7 +550,6 @@ function useHealth(): UseHealthState
 - Auto-pings once on mount.
 - No authentication required — safe to call before the user is authenticated.
 - Cancels any in-flight ping on unmount.
-- `refetch()` can be called repeatedly for polling; each call cancels the previous one.
 
 ```tsx
 import { useHealth } from "@arctics/flex-db-react";
@@ -562,7 +567,7 @@ function StatusBadge() {
 
 ## 5. Hooks — Mutate
 
-Mutation hooks (`useCreate`, `useSet`, `useDelete`) share a common pattern:
+Mutation hooks (`useCreate`, `useSet`, `useDelete`, `useUpdateOne`, `useUpdate`) share a common pattern:
 
 - They return an `execute` function you call in response to user actions.
 - `execute` is memoised with `useCallback` — stable across renders, safe to pass as props or use as effect dependencies.
@@ -607,7 +612,7 @@ function useCreate(options?: UseCreateOptions): UseMutationState<CreateArgs, Cre
 
 | Scenario | Behaviour |
 |---|---|
-| `execute` called while another `execute` is in-flight | Both requests proceed in parallel. State reflects whichever resolves last. Avoid calling `execute` concurrently — await the first call if ordering matters. |
+| `execute` called while another `execute` is in-flight | Both requests proceed in parallel. State reflects whichever resolves last. |
 | Server returns `ERR_STORE_FAILED` | `execute` throws a `FlexDBError`. `error` is set. `data` retains its previous value. |
 | `searchParams` not provided | Item is stored without any indexed metadata. It will not appear in any `useSearch` results. |
 
@@ -675,9 +680,9 @@ function useSet(options?: UseSetOptions): UseMutationState<SetArgs, SetResponse>
 
 | Scenario | Behaviour |
 |---|---|
-| Key does not exist | Item is created (upsert behaviour — same as `useCreate` but with a caller-supplied key). |
+| Key does not exist | Item is created (upsert behaviour). |
 | Key already exists | Stored value is **replaced entirely**. Previous `searchParams` are also fully replaced. |
-| `searchParams` not provided on update | Previously stored metadata is retained on the server — `searchParams` is only replaced when you explicitly pass it. |
+| `searchParams` not provided on update | Previously stored metadata is cleared on the server — `searchParams` must be re-supplied to preserve it. |
 
 ```tsx
 import { useSet } from "@arctics/flex-db-react";
@@ -739,7 +744,7 @@ function useDelete(options?: UseDeleteOptions): UseMutationState<DeleteArgs, Del
 
 | Scenario | Behaviour |
 |---|---|
-| Key does not exist | Server returns `ERR_NOT_FOUND`. `execute` throws a `FlexDBError` with `status === 404`. |
+| Key does not exist | Server still returns 200 — no existence check is performed. No error is thrown. |
 | Deletion is permanent | Both the item data and all metadata entries are deleted across all storage tiers. There is no soft-delete or recycle bin. |
 
 ```tsx
@@ -766,7 +771,349 @@ function DeleteButton({ itemKey }: { itemKey: string }) {
 
 ---
 
-## 6. Direct Client Access
+### `useUpdateOne`
+
+Performs a **shallow merge** update on a single item by key. Unlike `useSet`, only the fields you provide are overwritten — all other fields in the existing object are preserved.
+
+```ts
+function useUpdateOne(options?: UseUpdateOneOptions): UseMutationState<UpdateOneArgs, UpdateOneResponse>
+```
+
+#### Options — `UseUpdateOneOptions`
+
+| Field | Type | Description |
+|---|---|---|
+| `namespace` | `string` | Namespace override. Falls back to the provider default. |
+
+#### `execute` arguments — `UpdateOneArgs`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `key` | `string` | Yes | The key of the item to patch. The item **must** already exist. |
+| `data` | `unknown` | No | Fields to merge into the existing `data`. If both existing and incoming `data` are JSON objects, keys are merged shallowly. Otherwise the entire existing value is replaced. Omit to leave `data` unchanged. |
+| `searchParams` | `SearchParams` | No | Fields to merge into the existing `metadata.sp`. Provided keys overwrite or add; unspecified sp keys are preserved. Omit to leave search params unchanged. |
+| `namespace` | `string` | No | Per-call namespace override. |
+
+#### Return value — `UseMutationState<UpdateOneArgs, UpdateOneResponse>`
+
+| Field | Type | Description |
+|---|---|---|
+| `execute` | `(args: UpdateOneArgs) => Promise<UpdateOneResponse>` | Triggers the patch. Returns `{ v, ok, key }` on success. |
+| `data` | `UpdateOneResponse \| null` | Result of the last successful `execute`. |
+| `loading` | `boolean` | `true` while the request is in-flight. |
+| `error` | `FlexDBError \| FlexDBNetworkError \| Error \| null` | Most recent error, or `null`. |
+| `reset` | `() => void` | Clears `data`, `error`, and `loading`. |
+
+#### Edge cases
+
+| Scenario | Behaviour |
+|---|---|
+| Key does not exist | `execute` throws `FlexDBError` with `status === 404` and `code === "ERR_NOT_FOUND"`. |
+| Both existing and incoming `data` are JSON objects | Shallow merge: patch keys overwrite or add; missing patch keys are preserved. |
+| Existing `data` is not an object (e.g. an array) | Entire existing value is replaced by the patch `data`. |
+| `data` omitted from args | Existing `data` is unchanged. |
+| `searchParams` omitted from args | Existing `metadata.sp` is unchanged. |
+
+```tsx
+import { useUpdateOne } from "@arctics/flex-db-react";
+
+function AgeEditor({ userId }: { userId: string }) {
+  const { execute, loading, error } = useUpdateOne({ namespace: "users" });
+
+  const handleUpdate = () =>
+    execute({ key: userId, data: { age: 31 } });
+
+  return (
+    <>
+      {error && <p>{error.message}</p>}
+      <button onClick={handleUpdate} disabled={loading}>
+        {loading ? "Saving…" : "Update age"}
+      </button>
+    </>
+  );
+}
+```
+
+---
+
+### `useUpdate`
+
+Finds all items matching search filters and performs a **shallow merge** update on each. This is a **paginated mutation** — call `execute` repeatedly with `options.cursor` until no cursor is returned.
+
+```ts
+function useUpdate(options?: UseUpdateOptions): UseMutationState<UpdateArgs, UpdateByFilterResponse>
+```
+
+#### Options — `UseUpdateOptions`
+
+| Field | Type | Description |
+|---|---|---|
+| `namespace` | `string` | Namespace override. Falls back to the provider default. |
+
+#### `execute` arguments — `UpdateArgs`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `filters` | `Filters` | Yes | Filter conditions (AND-ed). Same syntax as `useSearch`. Must be non-empty. |
+| `data` | `unknown` | No | Fields to merge into each matching item's `data`. Omit to leave `data` unchanged. |
+| `searchParams` | `SearchParams` | No | Fields to merge into each matching item's `metadata.sp`. Omit to leave sp unchanged. |
+| `options.limit` | `number` | No | Max items to process per call. Values > 100 are clamped to 100. Defaults to 20. |
+| `options.cursor` | `string` | No | Pagination cursor from the previous `execute` call. Omit on the first call. |
+| `namespace` | `string` | No | Per-call namespace override. |
+
+#### Return value — `UseMutationState<UpdateArgs, UpdateByFilterResponse>`
+
+| Field | Type | Description |
+|---|---|---|
+| `execute` | `(args: UpdateArgs) => Promise<UpdateByFilterResponse>` | Triggers the batch update. Returns `{ v, ok, updated, cursor? }`. |
+| `data` | `UpdateByFilterResponse \| null` | Result of the last successful `execute`. |
+| `loading` | `boolean` | `true` while the request is in-flight. |
+| `error` | `FlexDBError \| FlexDBNetworkError \| Error \| null` | Most recent error, or `null`. |
+| `reset` | `() => void` | Clears `data`, `error`, and `loading`. |
+
+#### `UpdateByFilterResponse`
+
+| Field | Type | Description |
+|---|---|---|
+| `updated` | `number` | Count of objects successfully patched in this call. |
+| `cursor` | `string \| undefined` | Present when more matching objects exist. Pass to the next call's `options.cursor`. |
+
+#### Edge cases
+
+| Scenario | Behaviour |
+|---|---|
+| `filters` is empty `{}` | Server returns `ERR_MISSING_FILTER`. |
+| Object race-deleted during the update | Silently skipped; not counted in `updated`. |
+| `cursor` present in response | More matching items exist. Call `execute` again with `options.cursor` set to this value. |
+
+```tsx
+import { useUpdate } from "@arctics/flex-db-react";
+
+function ArchiveAllButton() {
+  const { execute, loading, error } = useUpdate({ namespace: "posts" });
+
+  const handleArchive = async () => {
+    let cursor: string | undefined;
+    do {
+      const result = await execute({
+        filters:      { status: { eq: "active" } },
+        data:         { status: "archived" },
+        searchParams: { status: "archived" },
+        options:      { cursor },
+      });
+      cursor = result.cursor;
+    } while (cursor);
+  };
+
+  return (
+    <>
+      {error && <p>{error.message}</p>}
+      <button onClick={handleArchive} disabled={loading}>
+        {loading ? "Archiving…" : "Archive all"}
+      </button>
+    </>
+  );
+}
+```
+
+---
+
+## 6. Hooks — Bulk
+
+Bulk hooks operate on multiple items in a single request. All bulk hooks follow the same `UseMutationState` pattern as single-item mutation hooks.
+
+**Limits (default, configurable server-side):**
+- Maximum 50 items per `useBulkCreate` or `useBulkSet` call.
+- Maximum 50 keys per `useBulkDelete` call.
+- Exceeding these limits returns `ERR_BULK_TOO_LARGE` (HTTP 413).
+
+**Validation:** All items are validated upfront. If any item's `data` exceeds 5 MB, the entire request is rejected before any writes begin.
+
+**Rate limiting:** Each bulk request counts as **1 request** against the per-second and monthly rate limits, regardless of item count.
+
+---
+
+### `useBulkCreate`
+
+Creates up to 50 items in parallel, each with a **server-generated** key.
+
+```ts
+function useBulkCreate(options?: UseBulkCreateOptions): UseMutationState<BulkCreateArgs, BulkCreateResponse>
+```
+
+#### Options — `UseBulkCreateOptions`
+
+| Field | Type | Description |
+|---|---|---|
+| `namespace` | `string` | Namespace override. Falls back to the provider default. |
+
+#### `execute` arguments — `BulkCreateArgs`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `items` | `Array<{ value, searchParams? }>` | Yes | Array of objects to create. Maximum 50 items. |
+| `items[].value` | `unknown` | Yes | Any JSON-serialisable value to store. |
+| `items[].searchParams` | `SearchParams` | No | Key-value pairs to index for search. |
+| `namespace` | `string` | No | Per-call namespace override. |
+
+#### Return value — `UseMutationState<BulkCreateArgs, BulkCreateResponse>`
+
+| Field | Type | Description |
+|---|---|---|
+| `execute` | `(args: BulkCreateArgs) => Promise<BulkCreateResponse>` | Triggers the bulk create. Returns `{ v, ok, keys }`. |
+| `data` | `BulkCreateResponse \| null` | Result of the last successful `execute`. `data.keys` contains the generated keys in the same order as `items`. |
+| `loading` | `boolean` | `true` while the request is in-flight. |
+| `error` | `FlexDBError \| FlexDBNetworkError \| Error \| null` | Most recent error, or `null`. |
+| `reset` | `() => void` | Clears `data`, `error`, and `loading`. |
+
+```tsx
+import { useBulkCreate } from "@arctics/flex-db-react";
+
+function ImportButton({ records }: { records: UserRecord[] }) {
+  const { execute, loading, data, error } = useBulkCreate({ namespace: "users" });
+
+  const handleImport = async () => {
+    const { keys } = await execute({
+      items: records.map(r => ({
+        value:        { name: r.name, age: r.age },
+        searchParams: { role: r.role },
+      })),
+    });
+    console.log("Created keys:", keys);
+  };
+
+  return (
+    <>
+      {error && <p>{error.message}</p>}
+      {data  && <p>Created {data.keys.length} items.</p>}
+      <button onClick={handleImport} disabled={loading}>
+        {loading ? "Importing…" : "Import"}
+      </button>
+    </>
+  );
+}
+```
+
+---
+
+### `useBulkSet`
+
+Upserts up to 50 items in parallel at **caller-supplied** keys. Fully replaces existing values.
+
+```ts
+function useBulkSet(options?: UseBulkSetOptions): UseMutationState<BulkSetArgs, BulkSetResponse>
+```
+
+#### Options — `UseBulkSetOptions`
+
+| Field | Type | Description |
+|---|---|---|
+| `namespace` | `string` | Namespace override. Falls back to the provider default. |
+
+#### `execute` arguments — `BulkSetArgs`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `items` | `Array<{ key, value, searchParams? }>` | Yes | Array of objects to upsert. Maximum 50 items. |
+| `items[].key` | `string` | Yes | The key to store the item under. Created if absent; fully replaced if it exists. |
+| `items[].value` | `unknown` | Yes | Any JSON-serialisable value. Fully replaces any previously stored value. |
+| `items[].searchParams` | `SearchParams` | No | Fully replaces the previously stored search parameters for this key. |
+| `namespace` | `string` | No | Per-call namespace override. |
+
+#### Return value — `UseMutationState<BulkSetArgs, BulkSetResponse>`
+
+| Field | Type | Description |
+|---|---|---|
+| `execute` | `(args: BulkSetArgs) => Promise<BulkSetResponse>` | Triggers the bulk upsert. Returns `{ v, ok, keys }`. |
+| `data` | `BulkSetResponse \| null` | Result of the last successful `execute`. `data.keys` echoes the input keys in the same order. |
+| `loading` | `boolean` | `true` while the request is in-flight. |
+| `error` | `FlexDBError \| FlexDBNetworkError \| Error \| null` | Most recent error, or `null`. |
+| `reset` | `() => void` | Clears `data`, `error`, and `loading`. |
+
+```tsx
+import { useBulkSet } from "@arctics/flex-db-react";
+
+function SyncButton({ users }: { users: User[] }) {
+  const { execute, loading, error } = useBulkSet({ namespace: "users" });
+
+  const handleSync = () =>
+    execute({
+      items: users.map(u => ({
+        key:          u.id,
+        value:        { name: u.name, age: u.age },
+        searchParams: { role: u.role },
+      })),
+    });
+
+  return (
+    <>
+      {error && <p>{error.message}</p>}
+      <button onClick={handleSync} disabled={loading}>
+        {loading ? "Syncing…" : "Sync all"}
+      </button>
+    </>
+  );
+}
+```
+
+---
+
+### `useBulkDelete`
+
+Permanently removes up to 50 items in parallel. Non-existent keys are silently skipped.
+
+```ts
+function useBulkDelete(options?: UseBulkDeleteOptions): UseMutationState<BulkDeleteArgs, BulkDeleteResponse>
+```
+
+#### Options — `UseBulkDeleteOptions`
+
+| Field | Type | Description |
+|---|---|---|
+| `namespace` | `string` | Namespace override. Falls back to the provider default. |
+
+#### `execute` arguments — `BulkDeleteArgs`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `keys` | `string[]` | Yes | Array of object keys to permanently delete. Maximum 50 keys. Non-existent keys are silently skipped. |
+| `namespace` | `string` | No | Per-call namespace override. |
+
+#### Return value — `UseMutationState<BulkDeleteArgs, BulkDeleteResponse>`
+
+| Field | Type | Description |
+|---|---|---|
+| `execute` | `(args: BulkDeleteArgs) => Promise<BulkDeleteResponse>` | Triggers the bulk deletion. Returns `{ v, ok }`. |
+| `data` | `BulkDeleteResponse \| null` | Result of the last successful `execute`. |
+| `loading` | `boolean` | `true` while the request is in-flight. |
+| `error` | `FlexDBError \| FlexDBNetworkError \| Error \| null` | Most recent error, or `null`. |
+| `reset` | `() => void` | Clears `data`, `error`, and `loading`. |
+
+```tsx
+import { useBulkDelete } from "@arctics/flex-db-react";
+
+function DeleteSelectedButton({ selectedKeys }: { selectedKeys: string[] }) {
+  const { execute, loading, error } = useBulkDelete({ namespace: "users" });
+
+  const handleDelete = async () => {
+    if (!confirm(`Delete ${selectedKeys.length} items?`)) return;
+    await execute({ keys: selectedKeys });
+  };
+
+  return (
+    <>
+      {error && <p>{error.message}</p>}
+      <button onClick={handleDelete} disabled={loading || selectedKeys.length === 0}>
+        {loading ? "Deleting…" : `Delete ${selectedKeys.length} items`}
+      </button>
+    </>
+  );
+}
+```
+
+---
+
+## 7. Direct Client Access
 
 ### `useFlexDB`
 
@@ -818,9 +1165,14 @@ Throws `Error` at construction time if `apiKey` or `baseUrl` is missing.
 | `create(value, namespace?, searchParams?, signal?)` | `POST /v1` | Create item with server-generated key. Returns `{ key }`. |
 | `get<T>(key, namespace?, signal?)` | `GET /v1/:key` | Fetch single item. Returns `{ data: T }`. |
 | `set(key, value, namespace?, searchParams?, signal?)` | `PUT /v1/:key` | Upsert item at caller-supplied key. Returns `{ key }`. |
-| `delete(key, namespace?, signal?)` | `DELETE /v1/:key` | Permanently remove item. Returns `{ ok: true }`. |
+| `delete(key, namespace?, signal?)` | `DELETE /v1/:key` | Permanently remove item. Always returns `{ ok: true }`. |
+| `updateOne(key, patch, namespace?, signal?)` | `POST /v1/updateOne/:key` | Shallow merge patch into a single item. Returns `{ key }`. |
+| `update(filters, patch, namespace?, options?)` | `POST /v1/update` | Shallow merge patch into all matching items. Returns `{ updated, cursor? }`. |
 | `list(opts)` | `GET /v1/list` | Paginated list. Non-hydrated or hydrated — see overloads. |
 | `search(opts)` | `POST /v1/search` | Filtered search. Non-hydrated or hydrated — see overloads. |
+| `bulkCreate(items, namespace?, signal?)` | `POST /v1/bulk/create` | Create up to 50 items in parallel. Returns `{ keys }`. |
+| `bulkSet(items, namespace?, signal?)` | `POST /v1/bulk/set` | Upsert up to 50 items in parallel. Returns `{ keys }`. |
+| `bulkDelete(keys, namespace?, signal?)` | `DELETE /v1/bulk/delete` | Delete up to 50 items in parallel. Returns `{ ok: true }`. |
 
 #### `list` and `search` overloads
 
@@ -829,18 +1181,18 @@ Both methods have two overloads based on the `hydrate` flag:
 ```ts
 // Non-hydrated — returns keys only
 client.list({ namespace: "users", limit: 50 })
-// → Promise<{ keys: string[], count: number, cursor?: string }>
+// → Promise<{ keys: string[], cursor?: string }>
 
 // Hydrated — returns full objects (limit must be ≤ 50)
 client.list<User>({ namespace: "users", limit: 20, hydrate: true })
-// → Promise<{ items: { key: string; data: User | null }[], count: number, cursor?: string }>
+// → Promise<{ keys: { key: string; data: User | null }[], cursor?: string }>
 ```
 
 ---
 
-## 7. Search Filter Operators
+## 8. Search Filter Operators
 
-Used in `useSearch`, `useSearchHydrated`, and `client.search()`. Filter fields correspond to keys in the `searchParams` / `metadata` object stored when the item was created or updated.
+Used in `useSearch`, `useSearchHydrated`, `useUpdate`, and `client.search()`. Filter fields correspond to keys in the `searchParams` / `metadata.sp` object stored when the item was created or updated.
 
 All filters in a single request are **AND-ed** together. There is no OR support.
 
@@ -852,9 +1204,8 @@ All filters in a single request are **AND-ed** together. There is no OR support.
 | `gte` | `number \| string` | Greater than or equal — `field >= value`. |
 | `lt` | `number \| string` | Less than — `field < value`. |
 | `lte` | `number \| string` | Less than or equal — `field <= value`. |
-| `inc` | `string` | Contains — checks that a string field contains the substring, or an array/set field includes the element. |
 | `sw` | `string` | Starts with — checks that a string field begins with the given prefix. |
-| `ex` | `boolean` | Attribute existence — `true` means the field must exist; `false` means it must not exist. |
+| `ex` | `boolean` | Attribute existence — only `true` has an effect: the field must exist. Passing `false` has no effect server-side. |
 
 Multiple operators on a single field express a range query:
 
@@ -863,10 +1214,8 @@ const filters: Filters = {
   price:    { gte: 10, lte: 100 },    // range
   category: { eq: "books" },          // exact match
   inStock:  { eq: true },             // boolean
-  tags:     { inc: "sale" },          // array contains
   sku:      { sw: "BOOK-" },          // starts with
   discount: { ex: true },             // field must exist
-  archived: { ex: false },            // field must not exist
 };
 ```
 
@@ -875,15 +1224,15 @@ const filters: Filters = {
 | Scenario | Behaviour |
 |---|---|
 | Item has no `searchParams` | Has an empty metadata map — will not match any filter. |
-| Filter references a field not in `searchParams` | No items match that field — treated as if no item has the field. |
+| Filter references a field not in `searchParams` | No items match that field. |
 | Comparing a string field with a number value | No matches, not an error. Filter values must match the stored type. |
 | Nested field names (e.g. `"user.name"`) | Not supported. Only top-level keys of `searchParams` are indexed. |
-| `filters: {}` (empty object) | Server returns an empty array as a data-leak protection measure. Unfiltered scans via search are not permitted. |
+| `filters: {}` (empty object) | Server returns `ERR_MISSING_FILTER`. Unfiltered scans via search are not permitted. |
 | All operators in the filter map are unrecognised | Server returns an empty array. |
 
 ---
 
-## 8. Error Reference
+## 9. Error Reference
 
 ### `FlexDBError`
 
@@ -891,7 +1240,7 @@ Thrown when the server responds with a non-2xx HTTP status.
 
 ```ts
 class FlexDBError extends Error {
-  readonly status: number;       // HTTP status code (401, 403, 404, 429, 500 …)
+  readonly status: number;       // HTTP status code (400, 401, 403, 404, 413, 429, 500 …)
   readonly code:   string;       // Stable ERR_* constant — branch on this
   readonly hint:   string | undefined; // Actionable suggestion from the server
   readonly body:   unknown;      // Raw server response body
@@ -934,7 +1283,6 @@ class FlexDBNetworkError extends Error {
 import { FlexDBError, FlexDBNetworkError } from "@arctics/flex-db-react";
 
 if (error instanceof FlexDBNetworkError) {
-  // User-visible: "Could not reach the server. Check your connection."
   console.error(error.message); // "Network request failed: Failed to fetch"
   console.error(error.cause);   // Original fetch error
 } else if (error instanceof FlexDBError) {
@@ -948,17 +1296,18 @@ if (error instanceof FlexDBNetworkError) {
 | Code | HTTP Status | When it occurs |
 |---|---|---|
 | `ERR_MISSING_AUTH` | 401 | `Authorization` header is absent or malformed. |
-| `ERR_MISSING_NAMESPACE` | 401 | `X-Namespace` header is absent. Occurs when no namespace is set on the provider or the hook. |
+| `ERR_MISSING_NAMESPACE` | 400 | `X-Namespace` header is absent. Occurs when no namespace is set on the provider or the hook. |
 | `ERR_UNAUTHORIZED` | 401 | JWT is invalid, expired, algorithm is not RS256, issuer is wrong, or token record not found. |
 | `ERR_PERMISSION_DENIED` | 403 | Token is valid but lacks the required permission for the operation. |
 | `ERR_FORBIDDEN` | 403 | Caller's IP address is not in the database's whitelist. |
 | `ERR_NOT_FOUND` | 404 | No item exists with the given key in the given namespace. |
-| `ERR_MISSING_FILTER` | 400 | `POST /v1/search` body is absent or missing the `filters` field. |
+| `ERR_MISSING_FILTER` | 400 | `POST /v1/search` or `POST /v1/update` body is missing or has an empty `filters` field. |
 | `ERR_RATE_LIMIT_SECOND` | 429 | Per-second request rate exceeded. Retried automatically by the SDK. |
 | `ERR_RATE_LIMIT_MONTH` | 429 | Monthly request quota exhausted. Retried automatically by the SDK. |
-| `ERR_REQUEST_TOO_LARGE` | 429 | Payload exceeds the allowed size limit for the storage tier. |
-| `ERR_STORE_FAILED` | 500 | Storage write failed (size limit exceeded, infrastructure error, or missing `data` field). Retried automatically. |
-| `ERR_DELETE_FAILED` | 500 | Metadata deletion failed (infrastructure error). Retried automatically. |
+| `ERR_REQUEST_TOO_LARGE` | 413 | Payload exceeds the 5 MB size limit. |
+| `ERR_BULK_TOO_LARGE` | 413 | The `items` or `keys` array in a bulk request exceeds the server's item limit (default 50). |
+| `ERR_STORE_FAILED` | 500 | Storage write failed. Retried automatically. |
+| `ERR_DELETE_FAILED` | 500 | Metadata deletion failed. Retried automatically. |
 | `ERR_INTERNAL` | 500 | Unexpected server error. Retried automatically. |
 | `ERR_UNKNOWN` | — | Server did not include an error code in the response. SDK fallback value. |
 
@@ -973,9 +1322,9 @@ if (error instanceof FlexDBNetworkError) {
 
 ---
 
-## 9. Pagination
+## 10. Pagination
 
-All list and search hooks (`useList`, `useListHydrated`, `useSearch`, `useSearchHydrated`) use **cursor-based pagination**.
+All list and search hooks (`useList`, `useListHydrated`, `useSearch`, `useSearchHydrated`) use **cursor-based pagination**. `useUpdate` also uses cursor pagination for processing large result sets.
 
 ### Concept
 
@@ -984,7 +1333,7 @@ All list and search hooks (`useList`, `useListHydrated`, `useSearch`, `useSearch
 - When `cursor` is absent in the response, the caller is on the last page.
 - Cursors are **not stable** across object deletions. If an item is deleted between pages, it simply does not appear — no error is returned.
 
-### Hook pagination API
+### Hook pagination API (list/search)
 
 | Action | How |
 |---|---|
@@ -993,12 +1342,24 @@ All list and search hooks (`useList`, `useListHydrated`, `useSearch`, `useSearch
 | Check if more pages exist | Read `hasMore`. |
 | Reset to first page | Call `fetch()`. `data` is **replaced**. |
 
+### `useUpdate` pagination
+
+`useUpdate` uses `execute` for pagination. Inspect `cursor` in the result and call `execute` again:
+
+```ts
+let cursor: string | undefined;
+do {
+  const result = await execute({ filters, data: patch, options: { cursor } });
+  cursor = result.cursor;
+} while (cursor);
+```
+
 ### Constraints
 
 | Parameter | Minimum | Maximum | Default | Behaviour when exceeded |
 |---|---|---|---|---|
 | `limit` (non-hydrated) | 1 | 100 | 20 | Server silently clamps to 100. |
-| `limit` (hydrated) | 1 | 50 | 20 | SDK silently clamps to 50 before sending. Server also silently ignores `?full=true` when `limit > 50`. |
+| `limit` (hydrated) | 1 | 50 | 20 | SDK silently clamps to 50 before sending. |
 
 ### Do not mix cursors across operations
 
@@ -1006,7 +1367,7 @@ A cursor returned by a `list` request must not be used with a `search` request (
 
 ---
 
-## 10. Request Cancellation
+## 11. Request Cancellation
 
 All hooks use the native `AbortController` API to manage in-flight requests.
 
@@ -1031,7 +1392,7 @@ When a request is aborted and a new one immediately starts, the `loading` flag n
 
 ---
 
-## 11. Retry Behaviour
+## 12. Retry Behaviour
 
 Retry logic is implemented in the transport layer and applies to all hooks and direct client calls.
 
@@ -1068,11 +1429,9 @@ The `times` value is clamped to `[0, 10]`. The maximum total attempts for any si
 <FlexDBProvider config={{ ..., retry: false }}>
 ```
 
-When `retry: false`, every request is a single attempt with no retries.
-
 ---
 
-## 12. Namespace Resolution
+## 13. Namespace Resolution
 
 Every request (except `/health`) requires a namespace, sent as the `X-Namespace` header.
 

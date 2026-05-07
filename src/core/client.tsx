@@ -29,9 +29,25 @@ import type {
   SetResponse,
   GetResponse,
   DeleteResponse,
+  UpdateOneResponse,
+  UpdateByFilterResponse,
+  BulkCreateResponse,
+  BulkSetResponse,
+  BulkDeleteResponse,
   ListIdsResponse,
   ListItemsResponse,
 } from "./types.tsx";
+
+/** Converts the SDK's user-friendly Filters object to the API's array format. */
+function filtersToApi(filters: Filters): Array<{ field: string; op: string; value: unknown }> {
+  const result: Array<{ field: string; op: string; value: unknown }> = [];
+  for (const [field, ops] of Object.entries(filters)) {
+    for (const [op, value] of Object.entries(ops)) {
+      if (value !== undefined) result.push({ field, op, value });
+    }
+  }
+  return result;
+}
 
 /**
  * The underlying HTTP client shared across all FlexDB React hooks.
@@ -170,7 +186,7 @@ export class FlexDBClient {
 
     const body = {
       data: value,
-      ...(searchParams && { metadata: searchParams }),
+      ...(searchParams && { metadata: { sp: searchParams } }),
     };
 
     return this.#req({ method: "POST", path: "/v1", headers, body, signal });
@@ -265,7 +281,7 @@ export class FlexDBClient {
 
     const body = {
       data: value,
-      ...(searchParams && { metadata: searchParams }),
+      ...(searchParams && { metadata: { sp: searchParams } }),
     };
 
     return this.#req({ method: "PUT", path: `/v1/${encodeURIComponent(key)}`, headers, body, signal });
@@ -277,7 +293,8 @@ export class FlexDBClient {
    * Permanently removes an item from the store.
    *
    * This operation is **irreversible**. Both the item data and its search
-   * index entries are deleted.
+   * index entries are deleted. The server always returns 200 — even if the
+   * key did not exist.
    *
    * Prefer the {@link useDelete} hook in React components.
    *
@@ -286,7 +303,6 @@ export class FlexDBClient {
    * @param signal    - Optional `AbortSignal` for cancellation.
    * @returns `{ v: 1, ok: true }`.
    *
-   * @throws {@link FlexDBError} with `status === 404` if the key does not exist.
    * @throws {@link FlexDBNetworkError} When the request fails to reach the server.
    *
    * @example
@@ -322,6 +338,8 @@ export class FlexDBClient {
    * @param opts.signal    - Optional `AbortSignal` for cancellation.
    * @returns `{ v: 1, ok: true, keys: string[], count: number, cursor?: string }`.
    *
+   * @returns `{ v: 1, ok: true, keys: string[], cursor?: string }`.
+   *
    * @example Manual cursor pagination
    * ```ts
    * let cursor: string | undefined;
@@ -350,12 +368,12 @@ export class FlexDBClient {
    *
    * @param opts.hydrate - Must be `true` for this overload.
    * @param opts.limit   - Must be ≤ 50 when `hydrate` is `true`.
-   * @returns `{ v: 1, ok: true, items: { key, data }[], count: number, cursor?: string }`.
+   * @returns `{ v: 1, ok: true, keys: { key, data }[], cursor?: string }`.
    *
    * @example
    * ```ts
-   * const { items } = await client.list<User>({ namespace: "users", hydrate: true, limit: 20 });
-   * for (const { key, data } of items) console.log(key, data?.name);
+   * const { keys } = await client.list<User>({ namespace: "users", hydrate: true, limit: 20 });
+   * for (const { key, data } of keys) console.log(key, data?.name);
    * ```
    */
   list<T>(opts: {
@@ -402,7 +420,7 @@ export class FlexDBClient {
    * @param opts.cursor    - Pagination cursor from the previous response's `cursor`.
    * @param opts.hydrate   - Must be `false` or omitted for this overload.
    * @param opts.signal    - Optional `AbortSignal` for cancellation.
-   * @returns `{ v: 1, ok: true, keys: string[], count: number, cursor?: string }`.
+   * @returns `{ v: 1, ok: true, keys: string[], cursor?: string }`.
    *
    * @example
    * ```ts
@@ -430,17 +448,17 @@ export class FlexDBClient {
    *
    * @param opts.hydrate - Must be `true` for this overload.
    * @param opts.limit   - Must be ≤ 50 when `hydrate` is `true`.
-   * @returns `{ v: 1, ok: true, items: { key, data }[], count: number, cursor?: string }`.
+   * @returns `{ v: 1, ok: true, keys: { key, data }[], cursor?: string }`.
    *
    * @example
    * ```ts
-   * const { items } = await client.search<Product>({
+   * const { keys } = await client.search<Product>({
    *   namespace: "products",
    *   filters:   { category: { sw: "elec" } },
    *   hydrate:   true,
    *   limit:     10,
    * });
-   * for (const { key, data } of items) console.log(key, data?.title);
+   * for (const { key, data } of keys) console.log(key, data?.title);
    * ```
    */
   search<T>(opts: {
@@ -462,16 +480,246 @@ export class FlexDBClient {
   }): Promise<ListIdsResponse | ListItemsResponse<T>> {
     const headers: Record<string, string> = { "X-Namespace": this.#ns(opts.namespace) };
 
-    // Body contains only the filters map — hydration is a query param, not a body field
-    const body = { filters: opts.filters };
-
-    const query: Record<string, string | number | boolean | undefined> = {
-      limit:  opts.limit,
-      cursor: opts.cursor,
-      // Hydrated responses are enabled via ?full=true (server requires limit ≤ 50)
-      ...(opts.hydrate ? { full: "true" } : {}),
+    const body = {
+      filters: filtersToApi(opts.filters),
+      options: {
+        limit:  opts.limit ?? 20,
+        cursor: opts.cursor ?? null,
+        full:   opts.hydrate ?? false,
+      },
     };
 
-    return this.#req({ method: "POST", path: "/v1/search", headers, query, body, signal: opts.signal });
+    return this.#req({ method: "POST", path: "/v1/search", headers, body, signal: opts.signal });
+  }
+
+  // ── UpdateOne ──────────────────────────────────────────────────────────────
+
+  /**
+   * Performs a shallow merge update on a single item by key.
+   *
+   * Unlike {@link set}, this does **not** replace the stored value — only the
+   * fields you provide are overwritten; all other fields are preserved.
+   * The item must already exist; if the key is not found, a 404 error is thrown.
+   *
+   * See the API definition for full merge semantics: if both existing and
+   * incoming `data` are JSON objects, they are shallow-merged. Otherwise the
+   * existing value is replaced entirely.
+   *
+   * Prefer the {@link useUpdateOne} hook in React components.
+   *
+   * @param key          - The key of the item to patch.
+   * @param patch        - Fields to merge. Supply `data` and/or `searchParams`.
+   * @param namespace    - Namespace override. Falls back to the client-level default.
+   * @param signal       - Optional `AbortSignal` for cancellation.
+   * @returns `{ v: 1, ok: true, key }`.
+   *
+   * @throws {@link FlexDBError} with `status === 404` if the key does not exist.
+   * @throws {@link FlexDBNetworkError} When the request fails to reach the server.
+   *
+   * @example
+   * ```ts
+   * await client.updateOne("user-42", { data: { age: 31 } }, "users");
+   * ```
+   */
+  updateOne(
+    key:        string,
+    patch:      { data?: unknown; searchParams?: SearchParams },
+    namespace?: string,
+    signal?:    AbortSignal,
+  ): Promise<UpdateOneResponse> {
+    const body = {
+      ...(patch.data !== undefined && { data: patch.data }),
+      ...(patch.searchParams && { metadata: { sp: patch.searchParams } }),
+    };
+    return this.#req({
+      method:  "POST",
+      path:    `/v1/updateOne/${encodeURIComponent(key)}`,
+      headers: { "X-Namespace": this.#ns(namespace) },
+      body,
+      signal,
+    });
+  }
+
+  // ── Update (by filter) ─────────────────────────────────────────────────────
+
+  /**
+   * Finds objects matching search filters and shallow-merges a patch into each.
+   *
+   * Processes up to `options.limit` items per call (default 20, max 100).
+   * When the response includes a `cursor`, more matching items exist — call
+   * `update` again with `options.cursor` to process the next batch.
+   *
+   * Objects that cannot be read during the operation (e.g. race-deleted) are
+   * silently skipped and not counted in `updated`.
+   *
+   * Prefer the {@link useUpdate} hook in React components.
+   *
+   * @param filters   - Filter conditions (AND-ed). Same syntax as {@link search}.
+   * @param patch     - Fields to merge into each matching object.
+   * @param namespace - Namespace override.
+   * @param options   - Pagination options.
+   * @returns `{ v: 1, ok: true, updated: number, cursor?: string }`.
+   *
+   * @example Process all matching items in a loop
+   * ```ts
+   * let cursor: string | undefined;
+   * do {
+   *   const result = await client.update(
+   *     { status: { eq: "active" } },
+   *     { data: { status: "archived" }, searchParams: { status: "archived" } },
+   *     "users",
+   *     { cursor },
+   *   );
+   *   cursor = result.cursor;
+   * } while (cursor);
+   * ```
+   */
+  update(
+    filters:    Filters,
+    patch:      { data?: unknown; searchParams?: SearchParams },
+    namespace?: string,
+    options?:   { limit?: number; cursor?: string },
+  ): Promise<UpdateByFilterResponse> {
+    const body = {
+      filters: filtersToApi(filters),
+      ...(patch.data !== undefined && { data: patch.data }),
+      ...(patch.searchParams && { metadata: { sp: patch.searchParams } }),
+      options: {
+        limit:  options?.limit ?? 20,
+        cursor: options?.cursor ?? null,
+      },
+    };
+    return this.#req({
+      method:  "POST",
+      path:    "/v1/update",
+      headers: { "X-Namespace": this.#ns(namespace) },
+      body,
+    });
+  }
+
+  // ── Bulk Create ────────────────────────────────────────────────────────────
+
+  /**
+   * Creates up to 50 objects in parallel, each with a server-generated key.
+   *
+   * All items are validated upfront — if any item's `data` exceeds 5 MB the
+   * entire request is rejected before any writes begin.
+   *
+   * Prefer the {@link useBulkCreate} hook in React components.
+   *
+   * @param items     - Array of objects to create. Maximum 50 items.
+   * @param namespace - Namespace override.
+   * @param signal    - Optional `AbortSignal` for cancellation.
+   * @returns `{ v: 1, ok: true, keys: string[] }` — keys in the same order as `items`.
+   *
+   * @example
+   * ```ts
+   * const { keys } = await client.bulkCreate(
+   *   [
+   *     { value: { name: "Alice" }, searchParams: { role: "admin" } },
+   *     { value: { name: "Bob" } },
+   *   ],
+   *   "users",
+   * );
+   * ```
+   */
+  bulkCreate(
+    items:      Array<{ value: unknown; searchParams?: SearchParams }>,
+    namespace?: string,
+    signal?:    AbortSignal,
+  ): Promise<BulkCreateResponse> {
+    const body = {
+      items: items.map(i => ({
+        data:     i.value,
+        metadata: { sp: i.searchParams ?? {} },
+      })),
+    };
+    return this.#req({
+      method:  "POST",
+      path:    "/v1/bulk/create",
+      headers: { "X-Namespace": this.#ns(namespace) },
+      body,
+      signal,
+    });
+  }
+
+  // ── Bulk Set ───────────────────────────────────────────────────────────────
+
+  /**
+   * Upserts up to 50 objects in parallel at caller-supplied keys.
+   *
+   * Each item fully replaces any existing value at its key (same semantics as
+   * {@link set} applied to each item). Non-existent keys are created.
+   *
+   * Prefer the {@link useBulkSet} hook in React components.
+   *
+   * @param items     - Array of objects to upsert. Maximum 50 items.
+   * @param namespace - Namespace override.
+   * @param signal    - Optional `AbortSignal` for cancellation.
+   * @returns `{ v: 1, ok: true, keys: string[] }` — the input keys echoed back.
+   *
+   * @example
+   * ```ts
+   * const { keys } = await client.bulkSet(
+   *   [
+   *     { key: "user-1", value: { name: "Alice" } },
+   *     { key: "user-2", value: { name: "Bob" }, searchParams: { role: "viewer" } },
+   *   ],
+   *   "users",
+   * );
+   * ```
+   */
+  bulkSet(
+    items:      Array<{ key: string; value: unknown; searchParams?: SearchParams }>,
+    namespace?: string,
+    signal?:    AbortSignal,
+  ): Promise<BulkSetResponse> {
+    const body = {
+      items: items.map(i => ({
+        key:      i.key,
+        data:     i.value,
+        metadata: { sp: i.searchParams ?? {} },
+      })),
+    };
+    return this.#req({
+      method:  "POST",
+      path:    "/v1/bulk/set",
+      headers: { "X-Namespace": this.#ns(namespace) },
+      body,
+      signal,
+    });
+  }
+
+  // ── Bulk Delete ────────────────────────────────────────────────────────────
+
+  /**
+   * Deletes up to 50 objects in parallel from all storage tiers.
+   *
+   * Non-existent keys are silently skipped — no error is returned.
+   *
+   * Prefer the {@link useBulkDelete} hook in React components.
+   *
+   * @param keys      - Array of object keys to delete. Maximum 50 keys.
+   * @param namespace - Namespace override.
+   * @param signal    - Optional `AbortSignal` for cancellation.
+   * @returns `{ v: 1, ok: true }`.
+   *
+   * @example
+   * ```ts
+   * await client.bulkDelete(["user-1", "user-2", "user-3"], "users");
+   * ```
+   */
+  bulkDelete(
+    keys:       string[],
+    namespace?: string,
+    signal?:    AbortSignal,
+  ): Promise<BulkDeleteResponse> {
+    return this.#req({
+      method:  "DELETE",
+      path:    "/v1/bulk/delete",
+      headers: { "X-Namespace": this.#ns(namespace) },
+      body:    { keys },
+      signal,
+    });
   }
 }

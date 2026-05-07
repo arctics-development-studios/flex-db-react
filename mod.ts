@@ -218,8 +218,13 @@ export { useGet } from "./src/hooks/useGet.tsx";
 export { useCreate } from "./src/hooks/useCreate.tsx";
 export { useSet } from "./src/hooks/useSet.tsx";
 export { useDelete } from "./src/hooks/useDelete.tsx";
+export { useUpdateOne } from "./src/hooks/useUpdateOne.tsx";
+export { useUpdate } from "./src/hooks/useUpdate.tsx";
 export { useList, useListHydrated } from "./src/hooks/useList.tsx";
 export { useSearch, useSearchHydrated } from "./src/hooks/useSearch.tsx";
+export { useBulkCreate } from "./src/hooks/useBulkCreate.tsx";
+export { useBulkSet } from "./src/hooks/useBulkSet.tsx";
+export { useBulkDelete } from "./src/hooks/useBulkDelete.tsx";
 
 // ── Core client (escape hatch) ─────────────────────────────────────────────
 export { FlexDBClient } from "./src/core/client.tsx";
@@ -241,6 +246,11 @@ export type {
   SetResponse,
   GetResponse,
   DeleteResponse,
+  UpdateOneResponse,
+  UpdateByFilterResponse,
+  BulkCreateResponse,
+  BulkSetResponse,
+  BulkDeleteResponse,
   ListIdsResponse,
   ListItemsResponse,
 
@@ -256,8 +266,13 @@ export type { UseGetOptions } from "./src/hooks/useGet.tsx";
 export type { UseCreateOptions, CreateArgs } from "./src/hooks/useCreate.tsx";
 export type { UseSetOptions, SetArgs } from "./src/hooks/useSet.tsx";
 export type { UseDeleteOptions, DeleteArgs } from "./src/hooks/useDelete.tsx";
+export type { UseUpdateOneOptions, UpdateOneArgs } from "./src/hooks/useUpdateOne.tsx";
+export type { UseUpdateOptions, UpdateArgs } from "./src/hooks/useUpdate.tsx";
 export type { UseListOptions, UseListHydratedOptions } from "./src/hooks/useList.tsx";
 export type { UseSearchOptions, UseSearchHydratedOptions } from "./src/hooks/useSearch.tsx";
+export type { UseBulkCreateOptions, BulkCreateArgs } from "./src/hooks/useBulkCreate.tsx";
+export type { UseBulkSetOptions, BulkSetArgs } from "./src/hooks/useBulkSet.tsx";
+export type { UseBulkDeleteOptions, BulkDeleteArgs } from "./src/hooks/useBulkDelete.tsx";
 
 // ── Errors ─────────────────────────────────────────────────────────────────
 export { FlexDBError, FlexDBNetworkError } from "./src/core/types.tsx";

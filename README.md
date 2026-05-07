@@ -8,7 +8,7 @@ React hooks and a context provider for **FlexDB** — a high-performance distrib
 // deno.json
 {
   "imports": {
-    "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^1.1.0",
+    "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^2.2.0",
     "react": "npm:react@^18.0.0"
   }
 }
@@ -44,12 +44,17 @@ createRoot(document.getElementById("root")!).render(
 |---|---|
 | `useGet` | Fetch one item by key — auto-runs on mount, cancels on unmount |
 | `useCreate` | Create a new item with a server-generated key |
-| `useSet` | Upsert an item at a caller-supplied key |
+| `useSet` | Upsert an item at a caller-supplied key (full replace) |
 | `useDelete` | Permanently remove an item |
+| `useUpdateOne` | Shallow-merge a patch into a single item by key |
+| `useUpdate` | Shallow-merge a patch into all items matching a filter (paginated) |
 | `useList` | Paginated list of item keys with "load more" |
-| `useListHydrated` | Paginated list of full item objects (limit ≤ 20) |
+| `useListHydrated` | Paginated list of full item objects (limit ≤ 50) |
 | `useSearch` | Reactive filter-based search, re-runs when filters change |
-| `useSearchHydrated` | Reactive search returning full objects (limit ≤ 20) |
+| `useSearchHydrated` | Reactive search returning full objects (limit ≤ 50) |
+| `useBulkCreate` | Create up to 50 items in a single parallel request |
+| `useBulkSet` | Upsert up to 50 items in a single parallel request |
+| `useBulkDelete` | Delete up to 50 items in a single parallel request |
 | `useHealth` | Ping the service — useful for status badges |
 
 ---
@@ -153,7 +158,7 @@ function EditUserForm({ userId }: { userId: string }) {
 
 ## Deleting data — `useDelete`
 
-Permanently removes an item. Both the data and its search index entries are deleted.
+Permanently removes an item. Both the data and its search index entries are deleted. The server always returns success — even if the key did not exist.
 
 ```tsx
 import { useDelete } from "@arctics/flex-db-react";
@@ -166,6 +171,70 @@ function DeleteButton({ itemKey }: { itemKey: string }) {
       {error && <p>{error.message}</p>}
       <button onClick={() => execute({ key: itemKey })} disabled={loading}>
         {loading ? "Deleting…" : "Delete"}
+      </button>
+    </>
+  );
+}
+```
+
+---
+
+## Partial updates — `useUpdateOne`
+
+Shallow-merges a patch into a **single existing item** by key. Only the fields you supply are overwritten — all other fields are preserved.
+
+```tsx
+import { useUpdateOne } from "@arctics/flex-db-react";
+
+function AgeEditor({ userId }: { userId: string }) {
+  const { execute, loading, error } = useUpdateOne({ namespace: "users" });
+
+  return (
+    <>
+      {error && <p>{error.message}</p>}
+      <button
+        onClick={() => execute({ key: userId, data: { age: 31 } })}
+        disabled={loading}
+      >
+        {loading ? "Saving…" : "Update age"}
+      </button>
+    </>
+  );
+}
+```
+
+The item must already exist — if the key is not found, `execute` throws `FlexDBError` with `status === 404`.
+
+---
+
+## Batch partial updates — `useUpdate`
+
+Finds all items matching search filters and shallow-merges a patch into each. This is a **paginated mutation** — when the response includes a `cursor`, call `execute` again to process the next batch.
+
+```tsx
+import { useUpdate } from "@arctics/flex-db-react";
+
+function ArchiveAllButton() {
+  const { execute, loading, error } = useUpdate({ namespace: "posts" });
+
+  const handleArchive = async () => {
+    let cursor: string | undefined;
+    do {
+      const result = await execute({
+        filters:      { status: { eq: "active" } },
+        data:         { status: "archived" },
+        searchParams: { status: "archived" },
+        options:      { cursor },
+      });
+      cursor = result.cursor;
+    } while (cursor);
+  };
+
+  return (
+    <>
+      {error && <p>{error.message}</p>}
+      <button onClick={handleArchive} disabled={loading}>
+        {loading ? "Archiving…" : "Archive all"}
       </button>
     </>
   );
@@ -202,7 +271,7 @@ function UserList() {
 }
 ```
 
-### `useListHydrated` — full objects (limit ≤ 20)
+### `useListHydrated` — full objects (limit ≤ 50)
 
 ```tsx
 import { useListHydrated } from "@arctics/flex-db-react";
@@ -217,8 +286,8 @@ function UserCards() {
 
   return (
     <>
-      {data?.map(({ id, data: user }) => (
-        <UserCard key={id} user={user} />
+      {data?.map(({ key, data: user }) => (
+        <UserCard key={key} user={user} />
       ))}
       {hasMore && <button onClick={fetchMore}>Load more</button>}
     </>
@@ -269,7 +338,7 @@ function ProductSearch() {
 }
 ```
 
-### `useSearchHydrated` — full objects (limit ≤ 20)
+### `useSearchHydrated` — full objects (limit ≤ 50)
 
 ```tsx
 import { useSearchHydrated } from "@arctics/flex-db-react";
@@ -286,8 +355,8 @@ function ProductGrid() {
 
   return (
     <>
-      {data?.map(({ id, data: product }) => (
-        <ProductCard key={id} product={product} />
+      {data?.map(({ key, data: product }) => (
+        <ProductCard key={key} product={product} />
       ))}
       {hasMore && <button onClick={fetchMore}>Load more</button>}
     </>
@@ -303,18 +372,59 @@ function ProductGrid() {
 | `neq` | Not equal |
 | `gt` / `gte` | Greater than / greater than or equal |
 | `lt` / `lte` | Less than / less than or equal |
-| `inc` | String contains or array includes |
 | `sw` | String starts with |
-| `ex` | Field exists (`true`) / does not exist (`false`) |
+| `ex` | Field exists (`true`). Passing `false` has no effect server-side. |
 
 ```tsx
 const filters = useMemo(() => ({
   price:    { gte: 10, lte: 100 },   // range
   category: { eq: "electronics" },   // exact
   sku:      { sw: "WIDGET-" },        // prefix
-  tags:     { inc: "sale" },          // contains
-  discount: { ex: true },             // field exists
+  discount: { ex: true },             // field must exist
 }), []);
+```
+
+---
+
+## Bulk operations
+
+Create, upsert, or delete up to 50 items in a single parallel request.
+
+```tsx
+import { useBulkCreate, useBulkSet, useBulkDelete } from "@arctics/flex-db-react";
+
+// Bulk create — server-generated keys
+function ImportButton({ records }: { records: Record<string, unknown>[] }) {
+  const { execute, loading } = useBulkCreate({ namespace: "items" });
+
+  return (
+    <button onClick={() => execute({ items: records.map(r => ({ value: r })) })} disabled={loading}>
+      {loading ? "Importing…" : "Import all"}
+    </button>
+  );
+}
+
+// Bulk set — caller-supplied keys
+function SyncButton({ items }: { items: { id: string; data: unknown }[] }) {
+  const { execute, loading } = useBulkSet({ namespace: "items" });
+
+  return (
+    <button onClick={() => execute({ items: items.map(i => ({ key: i.id, value: i.data })) })} disabled={loading}>
+      {loading ? "Syncing…" : "Sync"}
+    </button>
+  );
+}
+
+// Bulk delete
+function DeleteSelectedButton({ keys }: { keys: string[] }) {
+  const { execute, loading } = useBulkDelete({ namespace: "items" });
+
+  return (
+    <button onClick={() => execute({ keys })} disabled={loading || keys.length === 0}>
+      {loading ? "Deleting…" : `Delete ${keys.length}`}
+    </button>
+  );
+}
 ```
 
 ---
@@ -357,7 +467,7 @@ if (error instanceof FlexDBError) {
 }
 ```
 
-Mutation hooks (`useCreate`, `useSet`, `useDelete`) also **re-throw** from `execute`, so you can handle failures inline with `try/catch`:
+Mutation hooks (`useCreate`, `useSet`, `useDelete`, `useUpdateOne`, `useUpdate`, `useBulkCreate`, `useBulkSet`, `useBulkDelete`) also **re-throw** from `execute`, so you can handle failures inline with `try/catch`:
 
 ```tsx
 const { execute } = useCreate({ namespace: "users" });
@@ -415,8 +525,8 @@ function TransferButton({ fromKey, toKey }: { fromKey: string; toKey: string }) 
   const client = useFlexDB();
 
   const handleTransfer = async () => {
-    const { item } = await client.get(fromKey);
-    await client.set(toKey, item);
+    const { data } = await client.get(fromKey);
+    await client.set(toKey, data);
     await client.delete(fromKey);
   };
 

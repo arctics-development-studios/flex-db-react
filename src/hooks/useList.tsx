@@ -338,7 +338,7 @@ export function useListHydrated<T = unknown>(
         hydrate:   true,
         signal:    controller.signal,
       });
-      setData(response.items);
+      setData(response.keys);
       setCursor(response.cursor);
       setHasMore(!!response.cursor);
     } catch (err) {
@@ -366,7 +366,7 @@ export function useListHydrated<T = unknown>(
         hydrate:   true,
         signal:    controller.signal,
       });
-      setData((prev: { key: string; data: T | null }[] | null) => [...(prev ?? []), ...response.items]);
+      setData((prev: { key: string; data: T | null }[] | null) => [...(prev ?? []), ...response.keys]);
       setCursor(response.cursor);
       setHasMore(!!response.cursor);
     } catch (err) {

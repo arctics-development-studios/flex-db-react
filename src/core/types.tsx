@@ -179,9 +179,8 @@ export type SearchParams = Record<string, SearchParamValue>;
  *   price:    { gte: 10, lte: 100 },   // numeric range
  *   category: { eq: "electronics" },   // exact match
  *   sku:      { sw: "WIDGET-" },        // starts with
- *   tags:     { inc: "sale" },          // array / string contains
  *   rating:   { neq: null },            // not null
- *   discount: { ex: true },             // field exists
+ *   discount: { ex: true },             // field must exist
  * };
  * ```
  */
@@ -217,21 +216,15 @@ export interface FilterOperators {
    */
   lte?: number | string;
   /**
-   * Contains — `contains(field, value)`.
-   * Checks that a string field contains the given substring,
-   * or that a set/array field includes the given element.
-   * Value must be a string.
-   */
-  inc?: string;
-  /**
    * Starts with — `begins_with(field, value)`.
    * Checks that a string field begins with the given prefix.
    * Value must be a string.
    */
   sw?:  string;
   /**
-   * Attribute existence check.
-   * `true` → field must exist; `false` → field must not exist.
+   * Attribute existence check — `attribute_exists(field)`.
+   * Only `true` has an effect: the field must exist on the stored object.
+   * Passing `false` has no effect server-side and is ignored.
    */
   ex?:  boolean;
 }
@@ -328,6 +321,62 @@ export interface DeleteResponse {
 }
 
 /**
+ * Returned by {@link useUpdateOne} after a successful `execute()` call.
+ */
+export interface UpdateOneResponse {
+  v: 1;
+  ok: true;
+  /** The key that was patched. */
+  key: string;
+}
+
+/**
+ * Returned by {@link useUpdate} after a successful `execute()` call.
+ *
+ * When `cursor` is present, more matching objects exist — call `execute` again
+ * with `options.cursor` set to this value to process the next page.
+ */
+export interface UpdateByFilterResponse {
+  v: 1;
+  ok: true;
+  /** Number of objects successfully patched in this call. */
+  updated: number;
+  /**
+   * Present when more matching objects exist beyond this page.
+   * Pass as `options.cursor` in the next `execute` call.
+   */
+  cursor?: string;
+}
+
+/**
+ * Returned by {@link useBulkCreate} after a successful `execute()` call.
+ */
+export interface BulkCreateResponse {
+  v: 1;
+  ok: true;
+  /** Auto-generated keys for each created object, in the same order as `items`. */
+  keys: string[];
+}
+
+/**
+ * Returned by {@link useBulkSet} after a successful `execute()` call.
+ */
+export interface BulkSetResponse {
+  v: 1;
+  ok: true;
+  /** The input keys echoed back in the same order as `items`. */
+  keys: string[];
+}
+
+/**
+ * Returned by {@link useBulkDelete} after a successful `execute()` call.
+ */
+export interface BulkDeleteResponse {
+  v: 1;
+  ok: true;
+}
+
+/**
  * Raw server response for list/search operations that return only item keys.
  * Surfaced as `data` (array of strings) and `cursor`/`hasMore` in
  * {@link PaginatedState} returned by {@link useList} and {@link useSearch}.
@@ -337,8 +386,6 @@ export interface ListIdsResponse {
   ok: true;
   /** Array of object keys on this page. */
   keys: string[];
-  /** Number of keys returned on this page. Equivalent to `keys.length`. */
-  count: number;
   /**
    * Opaque pagination token. Present only when more pages exist.
    * Pass as `cursor` on the next call to fetch the next page.
@@ -356,9 +403,7 @@ export interface ListItemsResponse<T = unknown> {
   v: 1;
   ok: true;
   /** Array of `{ key, data }` pairs. `data` may be `null` if an item was concurrently deleted. */
-  items: { key: string; data: T | null }[];
-  /** Number of items returned on this page. Equivalent to `items.length`. */
-  count: number;
+  keys: { key: string; data: T | null }[];
   /**
    * Opaque pagination token. Present only when more pages exist.
    * Pass as `cursor` on the next call to fetch the next page.
