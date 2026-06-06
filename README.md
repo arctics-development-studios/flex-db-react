@@ -8,7 +8,7 @@ React hooks and a context provider for **FlexDB** — a high-performance distrib
 // deno.json
 {
   "imports": {
-    "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^3.0.0",
+    "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^2.6.0",
     "react": "npm:react@^18.0.0"
   }
 }
