@@ -1,6 +1,6 @@
 # FlexDB React SDK
 
-React hooks and a context provider for **FlexDB** — a high-performance distributed key-value store. Drop the provider in once, then read and mutate data from any component with a single hook call.
+React hooks and a context provider for **FlexDB** — a high-performance distributed key-value store. A thin React layer over [`@arctics/flex-db-sdk`](https://jsr.io/@arctics/flex-db-sdk). Drop the provider in once, then read and mutate data from any component with a single hook call.
 
 ## Installation
 
@@ -8,11 +8,10 @@ React hooks and a context provider for **FlexDB** — a high-performance distrib
 // deno.json
 {
   "imports": {
-    "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^2.2.0",
+    "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^3.0.0",
     "react": "npm:react@^18.0.0"
   }
 }
-// package.json
 ```
 
 ## Setup
@@ -36,7 +35,7 @@ createRoot(document.getElementById("root")!).render(
 );
 ```
 
-> **Tip:** define `config` outside your component (or memoise it with `useMemo`). An unstable reference recreates the internal client on every render.
+> **Tip:** define `config` outside your component (or memoize it with `useMemo`). An unstable reference recreates the internal client on every render.
 
 ## Hooks at a glance
 
@@ -46,8 +45,6 @@ createRoot(document.getElementById("root")!).render(
 | `useCreate` | Create a new item with a server-generated key |
 | `useSet` | Upsert an item at a caller-supplied key (full replace) |
 | `useDelete` | Permanently remove an item |
-| `useUpdateOne` | Shallow-merge a patch into a single item by key |
-| `useUpdate` | Shallow-merge a patch into all items matching a filter (paginated) |
 | `useList` | Paginated list of item keys with "load more" |
 | `useListHydrated` | Paginated list of full item objects (limit ≤ 50) |
 | `useSearch` | Reactive filter-based search, re-runs when filters change |
@@ -110,8 +107,8 @@ function NewUserForm() {
 
   const handleSubmit = async (form: UserForm) => {
     const { key } = await execute({
-      value:        { name: form.name, age: form.age },
-      searchParams: { age: form.age, role: form.role }, // index for search
+      value: { name: form.name, age: form.age },
+      sp:    { age: form.age, role: form.role }, // index for search
     });
     console.log("Saved as:", key);
   };
@@ -171,70 +168,6 @@ function DeleteButton({ itemKey }: { itemKey: string }) {
       {error && <p>{error.message}</p>}
       <button onClick={() => execute({ key: itemKey })} disabled={loading}>
         {loading ? "Deleting…" : "Delete"}
-      </button>
-    </>
-  );
-}
-```
-
----
-
-## Partial updates — `useUpdateOne`
-
-Shallow-merges a patch into a **single existing item** by key. Only the fields you supply are overwritten — all other fields are preserved.
-
-```tsx
-import { useUpdateOne } from "@arctics/flex-db-react";
-
-function AgeEditor({ userId }: { userId: string }) {
-  const { execute, loading, error } = useUpdateOne({ namespace: "users" });
-
-  return (
-    <>
-      {error && <p>{error.message}</p>}
-      <button
-        onClick={() => execute({ key: userId, data: { age: 31 } })}
-        disabled={loading}
-      >
-        {loading ? "Saving…" : "Update age"}
-      </button>
-    </>
-  );
-}
-```
-
-The item must already exist — if the key is not found, `execute` throws `FlexDBError` with `status === 404`.
-
----
-
-## Batch partial updates — `useUpdate`
-
-Finds all items matching search filters and shallow-merges a patch into each. This is a **paginated mutation** — when the response includes a `cursor`, call `execute` again to process the next batch.
-
-```tsx
-import { useUpdate } from "@arctics/flex-db-react";
-
-function ArchiveAllButton() {
-  const { execute, loading, error } = useUpdate({ namespace: "posts" });
-
-  const handleArchive = async () => {
-    let cursor: string | undefined;
-    do {
-      const result = await execute({
-        filters:      { status: { eq: "active" } },
-        data:         { status: "archived" },
-        searchParams: { status: "archived" },
-        options:      { cursor },
-      });
-      cursor = result.cursor;
-    } while (cursor);
-  };
-
-  return (
-    <>
-      {error && <p>{error.message}</p>}
-      <button onClick={handleArchive} disabled={loading}>
-        {loading ? "Archiving…" : "Archive all"}
       </button>
     </>
   );
@@ -369,18 +302,18 @@ function ProductGrid() {
 | Operator | Meaning |
 |---|---|
 | `eq` | Exact match |
-| `neq` | Not equal |
+| `ne` | Not equal |
 | `gt` / `gte` | Greater than / greater than or equal |
 | `lt` / `lte` | Less than / less than or equal |
-| `sw` | String starts with |
-| `ex` | Field exists (`true`). Passing `false` has no effect server-side. |
+| `starts_with` | String starts with prefix |
+| `contains` | String contains substring |
 
 ```tsx
 const filters = useMemo(() => ({
-  price:    { gte: 10, lte: 100 },   // range
-  category: { eq: "electronics" },   // exact
-  sku:      { sw: "WIDGET-" },        // prefix
-  discount: { ex: true },             // field must exist
+  price:    { gte: 10, lte: 100 },        // range
+  category: { eq: "electronics" },        // exact
+  sku:      { starts_with: "WIDGET-" },   // prefix
+  name:     { contains: "Pro" },          // substring
 }), []);
 ```
 
@@ -398,7 +331,10 @@ function ImportButton({ records }: { records: Record<string, unknown>[] }) {
   const { execute, loading } = useBulkCreate({ namespace: "items" });
 
   return (
-    <button onClick={() => execute({ items: records.map(r => ({ value: r })) })} disabled={loading}>
+    <button
+      onClick={() => execute({ items: records.map(r => ({ data: r })) })}
+      disabled={loading}
+    >
       {loading ? "Importing…" : "Import all"}
     </button>
   );
@@ -409,7 +345,10 @@ function SyncButton({ items }: { items: { id: string; data: unknown }[] }) {
   const { execute, loading } = useBulkSet({ namespace: "items" });
 
   return (
-    <button onClick={() => execute({ items: items.map(i => ({ key: i.id, value: i.data })) })} disabled={loading}>
+    <button
+      onClick={() => execute({ items: items.map(i => ({ key: i.id, data: i.data })) })}
+      disabled={loading}
+    >
       {loading ? "Syncing…" : "Sync"}
     </button>
   );
@@ -420,7 +359,10 @@ function DeleteSelectedButton({ keys }: { keys: string[] }) {
   const { execute, loading } = useBulkDelete({ namespace: "items" });
 
   return (
-    <button onClick={() => execute({ keys })} disabled={loading || keys.length === 0}>
+    <button
+      onClick={() => execute({ keys })}
+      disabled={loading || keys.length === 0}
+    >
       {loading ? "Deleting…" : `Delete ${keys.length}`}
     </button>
   );
@@ -457,9 +399,13 @@ import { FlexDBError, FlexDBNetworkError } from "@arctics/flex-db-react";
 const { error } = useGet("some-key");
 
 if (error instanceof FlexDBError) {
-  // Non-2xx response — inspect the HTTP status and raw server payload
-  if (error.status === 404) console.error("Not found");
-  if (error.status === 401) console.error("Invalid API key");
+  // Non-2xx response — inspect the error code and HTTP status
+  switch (error.code) {
+    case "ERR_NOT_FOUND":         console.error("Not found"); break;
+    case "ERR_UNAUTHORIZED":      console.error("Invalid API key"); break;
+    case "ERR_RATE_LIMIT_SECOND":
+    case "ERR_RATE_LIMIT_MONTH":  console.error("Rate limited"); break;
+  }
   console.error(error.body); // raw server payload
 } else if (error instanceof FlexDBNetworkError) {
   // fetch() itself failed — DNS, connection refused, timeout, etc.
@@ -467,7 +413,7 @@ if (error instanceof FlexDBError) {
 }
 ```
 
-Mutation hooks (`useCreate`, `useSet`, `useDelete`, `useUpdateOne`, `useUpdate`, `useBulkCreate`, `useBulkSet`, `useBulkDelete`) also **re-throw** from `execute`, so you can handle failures inline with `try/catch`:
+Mutation hooks (`useCreate`, `useSet`, `useDelete`, `useBulkCreate`, `useBulkSet`, `useBulkDelete`) also **re-throw** from `execute`, so you can handle failures inline with `try/catch`:
 
 ```tsx
 const { execute } = useCreate({ namespace: "users" });
@@ -484,7 +430,7 @@ try {
 
 ## Retry configuration
 
-By default the SDK retries failed requests up to **3 times** with a **10 ms** delay. Only transient errors are retried — network failures, HTTP `429`, and HTTP `5xx`. Client errors (`4xx`) and aborted requests are thrown immediately.
+By default the SDK retries failed requests up to **3 times** with a **10 ms** delay. Only transient errors are retried — network failures and HTTP `5xx`. Client errors (`4xx`) are thrown immediately.
 
 ```tsx
 // Aggressive retry
@@ -514,9 +460,17 @@ The namespace set on `FlexDBProvider` is the default for every hook. Override it
 
 ---
 
+## Write-buffer visibility lag
+
+Writes (PUT, POST create, bulk set/create) are immediately readable via `useGet`. However, `useList` and `useSearch` query the flushed metadata tier — newly written items may take up to ~60 seconds to appear there.
+
+This is intentional server behaviour, not a bug.
+
+---
+
 ## Escape hatch — direct client access
 
-For imperative logic that doesn't fit the hook pattern, use `useFlexDB()` to obtain the shared `FlexDBClient` instance:
+For imperative logic that doesn't fit the hook pattern, use `useFlexDB()` to obtain the shared `FlexDBClient` instance from `@arctics/flex-db-sdk`:
 
 ```tsx
 import { useFlexDB } from "@arctics/flex-db-react";
@@ -525,9 +479,9 @@ function TransferButton({ fromKey, toKey }: { fromKey: string; toKey: string }) 
   const client = useFlexDB();
 
   const handleTransfer = async () => {
-    const { data } = await client.get(fromKey);
-    await client.set(toKey, data);
-    await client.delete(fromKey);
+    const { data } = await client.get(fromKey, { namespace: "items" });
+    await client.set(toKey, data, { namespace: "items" });
+    await client.delete(fromKey, { namespace: "items" });
   };
 
   return <button onClick={handleTransfer}>Transfer</button>;
@@ -544,7 +498,7 @@ const client = new FlexDBClient({
   baseUrl: "https://eu.flex.arctics.dev",
 });
 
-const { key } = await client.create({ name: "Alice" }, "users");
+const { key } = await client.create({ name: "Alice" }, { namespace: "users" });
 ```
 
 ---

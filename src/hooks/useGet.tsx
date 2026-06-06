@@ -9,6 +9,7 @@
 //  Fetches a single item by key. Auto-runs on mount
 //  and whenever key or namespace changes.
 //  Cancels in-flight requests on unmount.
+//  Delegates to FlexDBClient.get() from @arctics/flex-db-sdk.
 // ─────────────────────────────────────────────
 
 import {
@@ -16,10 +17,9 @@ import {
   useEffect,
   useCallback,
   useRef,
-  type DependencyList,
 } from "react";
 
-import { useFlexDB } from "../context.tsx";
+import { useFlexDB }       from "../context.tsx";
 import type { UseGetState } from "../core/types.tsx";
 
 /**
@@ -35,18 +35,13 @@ export interface UseGetOptions {
    * When `false`, the hook will **not** auto-fetch on mount or when `key`
    * changes. Call `refetch()` manually to trigger the first fetch.
    *
-   * Useful when you want to defer loading until a condition is met, such as
-   * a modal opening or a user action.
+   * Useful when you want to defer loading until a condition is met.
    *
    * @default true
    *
    * @example
    * ```tsx
-   * const [open, setOpen] = useState(false);
-   * const { data, refetch } = useGet(userId, { enabled: open });
-   *
-   * // Data is only fetched when the modal opens
-   * <button onClick={() => { setOpen(true); refetch(); }}>Open</button>
+   * const { data } = useGet(userId, { enabled: isModalOpen });
    * ```
    */
   enabled?: boolean;
@@ -56,10 +51,8 @@ export interface UseGetOptions {
  * Fetches a single item by key and keeps your component in sync.
  *
  * - **Auto-fetches** on mount and whenever `key` or `namespace` changes.
- * - **Cancels** the in-flight request when the component unmounts, preventing
- *   stale state updates on already-unmounted components.
- * - **Preserves `data`** across re-fetches so the UI never flashes to empty
- *   during a background refresh.
+ * - **Cancels** the in-flight request when the component unmounts.
+ * - **Preserves `data`** across re-fetches so the UI never flashes to empty.
  * - **Deferred fetching** is supported via `enabled: false` + manual `refetch()`.
  *
  * Pass the data type as a generic parameter for a fully-typed `data` field:
@@ -68,8 +61,8 @@ export interface UseGetOptions {
  * // data is `User | null`
  * ```
  *
- * @param key     - The item key to fetch. Pass `null` or `undefined` to skip fetching.
- * @param options - Optional namespace override and `enabled` flag. See {@link UseGetOptions}.
+ * @param key     - The item key to fetch. Pass `null` or `undefined` to skip.
+ * @param options - Namespace override and `enabled` flag. See {@link UseGetOptions}.
  * @returns {@link UseGetState} with `data`, `loading`, `error`, and `refetch`.
  *
  * @example Basic usage
@@ -93,27 +86,10 @@ export interface UseGetOptions {
  * }
  * ```
  *
- * @example Conditional fetching — only fetch when a modal opens
+ * @example Skip fetch until an ID is known
  * ```tsx
- * function UserModal({ userId, open }: { userId: string; open: boolean }) {
- *   const { data, loading } = useGet<User>(userId, {
- *     namespace: "users",
- *     enabled:   open, // no request until the modal is open
- *   });
- *
- *   if (!open) return null;
- *   return <div>{loading ? <Spinner /> : data?.name}</div>;
- * }
- * ```
- *
- * @example Optional key — skip fetch until an ID is known
- * ```tsx
- * function Profile() {
- *   const { userId } = useAuth(); // may be null before login
- *   const { data } = useGet<User>(userId); // no fetch while userId is null
- *
- *   return <div>{data?.name ?? "Loading…"}</div>;
- * }
+ * const { userId } = useAuth(); // may be null before login
+ * const { data } = useGet<User>(userId); // no fetch while userId is null
  * ```
  */
 export function useGet<T = unknown>(
@@ -128,8 +104,7 @@ export function useGet<T = unknown>(
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState<UseGetState<T>["error"]>(null);
 
-  // Stable ref so the fetch closure always sees the latest key/ns
-  // without adding them to useCallback's dep array
+  // Stable refs so the fetch closure always sees the latest key/ns
   const keyRef = useRef(key);
   const nsRef  = useRef(namespace);
   keyRef.current = key;
@@ -144,40 +119,35 @@ export function useGet<T = unknown>(
       setError(null);
 
       try {
-        const response = await client.get<T>(currentKey, nsRef.current, signal);
-        setData(response.data);
+        const result = await client.get<T>(currentKey, { namespace: nsRef.current, signal });
+        setData(result.data);
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") return;
         setError(err as Error);
       } finally {
-        // Only clear loading if this request was not superseded by a newer one
         if (!signal.aborted) setLoading(false);
       }
     },
-    [client], // client is stable for the provider's lifetime
+    [client],
   );
 
-  // Public refetch — creates a fresh AbortController each time
   const abortRef = useRef<AbortController | null>(null);
 
   const refetch = useCallback(() => {
     abortRef.current?.abort();
-    const controller   = new AbortController();
-    abortRef.current   = controller;
+    const controller  = new AbortController();
+    abortRef.current  = controller;
     fetchData(controller.signal);
   }, [fetchData]);
 
-  // Auto-fetch on mount and when key/namespace change
   useEffect(() => {
     if (!enabled || !key) return;
 
-    const controller = new AbortController();
-    abortRef.current = controller;
+    const controller  = new AbortController();
+    abortRef.current  = controller;
     fetchData(controller.signal);
 
-    return () => {
-      controller.abort();
-    };
+    return () => { controller.abort(); };
   }, [key, namespace, enabled, fetchData]);
 
   return { data, loading, error, refetch };

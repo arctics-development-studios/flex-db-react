@@ -8,16 +8,13 @@
 //  FlexDB React SDK · useBulkSet
 //  Upserts up to 50 items in parallel at caller-supplied keys.
 //  Fully replaces existing values — not a partial merge.
+//  Delegates to FlexDBClient.bulkSet() from @arctics/flex-db-sdk.
 // ─────────────────────────────────────────────
 
 import { useState, useCallback } from "react";
 
-import { useFlexDB }                from "../context.tsx";
-import type {
-  SearchParams,
-  BulkSetResponse,
-  UseMutationState,
-} from "../core/types.tsx";
+import { useFlexDB }                         from "../context.tsx";
+import type { SearchParams, BulkSetResult, UseMutationState } from "../core/types.tsx";
 
 /**
  * Options for {@link useBulkSet}.
@@ -36,15 +33,15 @@ export interface UseBulkSetOptions {
 export interface BulkSetArgs {
   /**
    * Array of items to upsert. Each must supply an explicit key.
-   * Maximum 50 items per call.
+   * Maximum 50 items per call (`ERR_BULK_TOO_LARGE` if exceeded).
    */
   items: Array<{
     /** The key to store the item under. Created if absent; fully replaced if it exists. */
-    key:           string;
+    key:  string;
     /** Any JSON-serialisable value. Fully replaces any previously stored value. */
-    value:         unknown;
+    data: unknown;
     /** Fully replaces the previously stored search parameters for this key. */
-    searchParams?: SearchParams;
+    sp?: SearchParams;
   }>;
   /** Per-call namespace override. Falls back to the hook-level then provider default. */
   namespace?: string;
@@ -53,17 +50,11 @@ export interface BulkSetArgs {
 /**
  * Upserts up to 50 items in a single parallel request at **caller-supplied** keys.
  *
- * Each item fully replaces any previously stored value at its key — this is
- * **not** a partial merge. Use {@link useUpdateOne} or {@link useUpdate} for
- * partial (shallow merge) updates.
+ * Each item fully replaces any previously stored value at its key.
+ * This is **not** a partial merge.
  *
- * All items are validated upfront before any writes begin. If any item's
- * `data` exceeds 5 MB, the entire request is rejected with
- * `ERR_REQUEST_TOO_LARGE`. If the `items` array exceeds 50, the request
- * is rejected with `ERR_BULK_TOO_LARGE`.
- *
- * `execute` is memoised with `useCallback` and stays stable across renders.
- * On failure, `execute` sets `error` state **and** re-throws.
+ * `execute` returns {@link BulkSetResult} with per-item `{ ok, error? }` results
+ * in the same order as `items`.
  *
  * @param options - Namespace override. See {@link UseBulkSetOptions}.
  * @returns {@link UseMutationState} with `execute`, `data`, `loading`, `error`, and `reset`.
@@ -75,19 +66,19 @@ export interface BulkSetArgs {
  * function SyncButton({ users }: { users: User[] }) {
  *   const { execute, loading, error } = useBulkSet({ namespace: "users" });
  *
- *   const handleSync = () =>
- *     execute({
- *       items: users.map(u => ({
- *         key:          u.id,
- *         value:        { name: u.name, age: u.age },
- *         searchParams: { role: u.role },
- *       })),
- *     });
- *
  *   return (
  *     <>
  *       {error && <p>{error.message}</p>}
- *       <button onClick={handleSync} disabled={loading}>
+ *       <button
+ *         onClick={() => execute({
+ *           items: users.map(u => ({
+ *             key:  u.id,
+ *             data: { name: u.name, age: u.age },
+ *             sp:   { role: u.role },
+ *           })),
+ *         })}
+ *         disabled={loading}
+ *       >
  *         {loading ? "Syncing…" : "Sync all"}
  *       </button>
  *     </>
@@ -97,20 +88,20 @@ export interface BulkSetArgs {
  */
 export function useBulkSet(
   options?: UseBulkSetOptions,
-): UseMutationState<BulkSetArgs, BulkSetResponse> {
+): UseMutationState<BulkSetArgs, BulkSetResult> {
   const client = useFlexDB();
 
-  const [data,    setData]    = useState<BulkSetResponse | null>(null);
+  const [data,    setData]    = useState<BulkSetResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState<UseMutationState<BulkSetArgs, BulkSetResponse>["error"]>(null);
+  const [error,   setError]   = useState<UseMutationState<BulkSetArgs, BulkSetResult>["error"]>(null);
 
-  const execute = useCallback(async (args: BulkSetArgs): Promise<BulkSetResponse> => {
+  const execute = useCallback(async (args: BulkSetArgs): Promise<BulkSetResult> => {
     setLoading(true);
     setError(null);
     try {
       const result = await client.bulkSet(
-        args.items,
-        args.namespace ?? options?.namespace,
+        args.items.map(i => ({ key: i.key, data: i.data, sp: i.sp })),
+        { namespace: args.namespace ?? options?.namespace },
       );
       setData(result);
       return result;

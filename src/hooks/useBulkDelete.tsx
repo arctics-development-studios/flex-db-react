@@ -7,16 +7,14 @@
 // ─────────────────────────────────────────────
 //  FlexDB React SDK · useBulkDelete
 //  Deletes up to 50 items in parallel across all storage tiers.
-//  Non-existent keys are silently skipped.
+//  Non-existent keys are silently skipped (idempotent).
+//  Delegates to FlexDBClient.bulkDelete() from @arctics/flex-db-sdk.
 // ─────────────────────────────────────────────
 
 import { useState, useCallback } from "react";
 
-import { useFlexDB }                from "../context.tsx";
-import type {
-  BulkDeleteResponse,
-  UseMutationState,
-} from "../core/types.tsx";
+import { useFlexDB }                           from "../context.tsx";
+import type { BulkDeleteResult, UseMutationState } from "../core/types.tsx";
 
 /**
  * Options for {@link useBulkDelete}.
@@ -37,7 +35,7 @@ export interface BulkDeleteArgs {
    * Array of object keys to permanently delete.
    * Maximum 50 keys per call. Non-existent keys are silently skipped.
    */
-  keys:       string[];
+  keys: string[];
   /** Per-call namespace override. Falls back to the hook-level then provider default. */
   namespace?: string;
 }
@@ -51,9 +49,6 @@ export interface BulkDeleteArgs {
  * This operation is **irreversible**. Both item data and all associated
  * search index entries are deleted.
  *
- * `execute` is memoised with `useCallback` and stays stable across renders.
- * On failure, `execute` sets `error` state **and** re-throws.
- *
  * @param options - Namespace override. See {@link UseBulkDeleteOptions}.
  * @returns {@link UseMutationState} with `execute`, `data`, `loading`, `error`, and `reset`.
  *
@@ -64,15 +59,13 @@ export interface BulkDeleteArgs {
  * function DeleteSelectedButton({ selectedKeys }: { selectedKeys: string[] }) {
  *   const { execute, loading, error } = useBulkDelete({ namespace: "users" });
  *
- *   const handleDelete = async () => {
- *     if (!confirm(`Delete ${selectedKeys.length} items?`)) return;
- *     await execute({ keys: selectedKeys });
- *   };
- *
  *   return (
  *     <>
  *       {error && <p>{error.message}</p>}
- *       <button onClick={handleDelete} disabled={loading || selectedKeys.length === 0}>
+ *       <button
+ *         onClick={() => execute({ keys: selectedKeys })}
+ *         disabled={loading || selectedKeys.length === 0}
+ *       >
  *         {loading ? "Deleting…" : `Delete ${selectedKeys.length} items`}
  *       </button>
  *     </>
@@ -82,20 +75,20 @@ export interface BulkDeleteArgs {
  */
 export function useBulkDelete(
   options?: UseBulkDeleteOptions,
-): UseMutationState<BulkDeleteArgs, BulkDeleteResponse> {
+): UseMutationState<BulkDeleteArgs, BulkDeleteResult> {
   const client = useFlexDB();
 
-  const [data,    setData]    = useState<BulkDeleteResponse | null>(null);
+  const [data,    setData]    = useState<BulkDeleteResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState<UseMutationState<BulkDeleteArgs, BulkDeleteResponse>["error"]>(null);
+  const [error,   setError]   = useState<UseMutationState<BulkDeleteArgs, BulkDeleteResult>["error"]>(null);
 
-  const execute = useCallback(async (args: BulkDeleteArgs): Promise<BulkDeleteResponse> => {
+  const execute = useCallback(async (args: BulkDeleteArgs): Promise<BulkDeleteResult> => {
     setLoading(true);
     setError(null);
     try {
       const result = await client.bulkDelete(
         args.keys,
-        args.namespace ?? options?.namespace,
+        { namespace: args.namespace ?? options?.namespace },
       );
       setData(result);
       return result;

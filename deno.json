@@ -1,6 +1,6 @@
 {
   "name": "@arctics/flex-db-react",
-  "version": "2.2.0",
+  "version": "2.6.0",
   "exports": "./mod.ts",
   "license": "Apache-2.0",
   "publish": {
@@ -8,6 +8,7 @@
     "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
   },
   "imports": {
+    "@arctics/flex-db-sdk": "jsr:@arctics/flex-db-sdk@^2.6.0",
     "react": "npm:react@^18.3.0",
     "react/jsx-runtime": "npm:react@^18.3.0/jsx-runtime",
     "@types/react": "npm:@types/react@^18.3.0"

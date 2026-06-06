@@ -12,7 +12,7 @@
 // ─────────────────────────────────────────────
 //  FlexDB React SDK · Context
 //  FlexDBProvider wraps your app once.
-//  useFlexDB() gives hooks access to the shared client.
+//  useFlexDB() gives hooks access to the shared @arctics/flex-db-sdk client.
 // ─────────────────────────────────────────────
 
 import {
@@ -23,8 +23,11 @@ import {
   type ReactNode,
 } from "react";
 
-import { FlexDBClient } from "./core/client.tsx";
-import type { FlexDBConfig } from "./core/types.tsx";
+import { FlexDBClient } from "@arctics/flex-db-sdk";
+import type { FlexDBClientOptions } from "@arctics/flex-db-sdk";
+
+/** Public alias for {@link FlexDBClientOptions}. Passed to {@link FlexDBProvider}. */
+export type FlexDBConfig = FlexDBClientOptions;
 
 // ── Context ────────────────────────────────────────────────────────────────
 
@@ -37,7 +40,7 @@ const FlexDBContext = createContext<FlexDBClient | null>(null);
  */
 export interface FlexDBProviderProps {
   /**
-   * Client configuration. See {@link FlexDBConfig} for all available options.
+   * Client configuration. See {@link FlexDBClientOptions} for all available options.
    *
    * **Important:** define this object **outside** your component or memoise it
    * with `useMemo`. An unstable reference (a new object on every render) causes
@@ -64,8 +67,7 @@ export interface FlexDBProviderProps {
  * Provides a shared {@link FlexDBClient} to every FlexDB hook in the tree.
  *
  * Mount `FlexDBProvider` **once** near the root of your application (or at
- * the root of whatever subtree needs database access). Every call to
- * {@link useGet}, {@link useCreate}, {@link useList}, etc. will share the
+ * the root of whatever subtree needs database access). Every hook shares the
  * same client instance, so connection settings and retry configuration are
  * defined in one place.
  *
@@ -89,19 +91,6 @@ export interface FlexDBProviderProps {
  * );
  * ```
  *
- * @example Multiple providers for separate namespaces
- * ```tsx
- * // Different parts of the app can have their own provider
- * // with a different default namespace.
- * <FlexDBProvider config={{ ...baseConfig, namespace: "users" }}>
- *   <UserSection />
- * </FlexDBProvider>
- *
- * <FlexDBProvider config={{ ...baseConfig, namespace: "products" }}>
- *   <ProductSection />
- * </FlexDBProvider>
- * ```
- *
  * @example Disabling retries for a development build
  * ```tsx
  * const config = {
@@ -112,14 +101,11 @@ export interface FlexDBProviderProps {
  * ```
  */
 export function FlexDBProvider({ config, children }: FlexDBProviderProps): ReactElement<any, any> {
-  // useMemo ensures the client is only recreated when config identity changes.
-  // In practice, define `config` outside the component or with useMemo upstream
-  // so it remains stable across renders.
   const client = useMemo(() => new FlexDBClient(config), [
     config.apiKey,
     config.baseUrl,
     config.namespace,
-    // Stringify retry so primitive changes are caught
+    // Stringify retry so primitive changes (times/delay) are detected
     JSON.stringify(config.retry),
   ]);
 
@@ -138,17 +124,13 @@ export function FlexDBProvider({ config, children }: FlexDBProviderProps): React
  * **Must be called inside a {@link FlexDBProvider}.** Throws a descriptive
  * error if no provider is found in the tree.
  *
- * You rarely need this directly — prefer the purpose-built hooks:
- * {@link useGet}, {@link useCreate}, {@link useSet}, {@link useDelete},
- * {@link useList}, {@link useListHydrated}, {@link useSearch},
- * {@link useSearchHydrated}.
+ * You rarely need this directly — prefer the purpose-built hooks such as
+ * {@link useGet}, {@link useCreate}, {@link useList}, or {@link useSearch}.
  *
- * Use `useFlexDB` when you need **imperative** access — for example,
- * chaining multiple operations in a single event handler, or integrating
- * FlexDB into a non-hook callback.
+ * Use `useFlexDB` when you need **imperative** access — for example, chaining
+ * multiple operations in a single event handler.
  *
  * @returns The {@link FlexDBClient} instance provided by the nearest {@link FlexDBProvider}.
- *
  * @throws `Error` if called outside a {@link FlexDBProvider}.
  *
  * @example Imperative multi-step operation
@@ -157,29 +139,12 @@ export function FlexDBProvider({ config, children }: FlexDBProviderProps): React
  *   const client = useFlexDB();
  *
  *   const handleTransfer = async () => {
- *     const { item } = await client.get(fromKey);
- *     await client.set(toKey, item);
- *     await client.delete(fromKey);
+ *     const { data } = await client.get(fromKey, { namespace: "items" });
+ *     await client.set(toKey, data, { namespace: "items" });
+ *     await client.delete(fromKey, { namespace: "items" });
  *   };
  *
  *   return <button onClick={handleTransfer}>Transfer</button>;
- * }
- * ```
- *
- * @example Accessing the client in a custom hook
- * ```tsx
- * function useUserWithPosts(userId: string) {
- *   const client = useFlexDB();
- *   const [result, setResult] = useState(null);
- *
- *   useEffect(() => {
- *     Promise.all([
- *       client.get(`user:${userId}`),
- *       client.search({ filters: { authorId: { eq: userId } } }),
- *     ]).then(([user, posts]) => setResult({ user, posts }));
- *   }, [userId, client]);
- *
- *   return result;
  * }
  * ```
  */

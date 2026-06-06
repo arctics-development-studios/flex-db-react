@@ -2,22 +2,18 @@
  * # FlexDB React SDK
  *
  * React hooks and a context provider for **FlexDB** — a high-performance
- * distributed key-value store. Drop the provider in once, then read and
- * mutate data from any component with a single hook call.
+ * distributed key-value store. Built as a thin React layer over
+ * `@arctics/flex-db-sdk`. Drop the provider in once, then read and mutate
+ * data from any component with a single hook call.
  *
  * ## Installation
  *
- * ```ts
+ * ```jsonc
  * // deno.json
  * {
  *   "imports": {
- *     "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^1.1.0"
- *   }
- * }
- * // package.json
- * {
- *   "dependencies": {
- *     "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^1.1.0"
+ *     "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^3.0.0",
+ *     "react": "npm:react@^18.0.0"
  *   }
  * }
  * ```
@@ -25,23 +21,22 @@
  * ## Setup — wrap your app with `FlexDBProvider`
  *
  * ```tsx
- * // main.tsx
  * import { FlexDBProvider } from "@arctics/flex-db-react";
  *
+ * const config = {
+ *   apiKey:    import.meta.env.VITE_FLEXDB_KEY,
+ *   baseUrl:   "https://eu.flex.arctics.dev",
+ *   namespace: "users", // optional default namespace
+ * };
+ *
  * createRoot(document.getElementById("root")!).render(
- *   <FlexDBProvider config={{
- *     apiKey:    import.meta.env.VITE_FLEXDB_KEY,
- *     baseUrl:   "https://eu.flex.arctics.dev",
- *     namespace: "users",
- *   }}>
+ *   <FlexDBProvider config={config}>
  *     <App />
  *   </FlexDBProvider>
  * );
  * ```
  *
- * Every FlexDB hook anywhere in the tree will share this one client instance.
- * A `namespace` set here becomes the default for every hook — you can still
- * override it per-hook when needed.
+ * Every FlexDB hook in the tree shares this one client instance.
  *
  * ## Reading data — `useGet`
  *
@@ -63,52 +58,17 @@
  * import { useCreate } from "@arctics/flex-db-react";
  *
  * function NewUserForm() {
- *   const { execute, loading, error } = useCreate();
+ *   const { execute, loading } = useCreate({ namespace: "users" });
  *
  *   const handleSubmit = async (form: UserForm) => {
  *     const { key } = await execute({
- *       value:        { name: form.name, age: form.age },
- *       searchParams: { age: form.age, role: form.role },
+ *       value: { name: form.name, age: form.age },
+ *       sp:    { age: form.age, role: form.role },
  *     });
  *     console.log("Saved as:", key);
  *   };
  *
- *   return (
- *     <button onClick={handleSubmit} disabled={loading}>
- *       {loading ? "Saving…" : "Save"}
- *     </button>
- *   );
- * }
- * ```
- *
- * ## Upserting data — `useSet`
- *
- * ```tsx
- * import { useSet } from "@arctics/flex-db-react";
- *
- * function EditUserForm({ userId }: { userId: string }) {
- *   const { execute, loading } = useSet();
- *
- *   return (
- *     <button onClick={() => execute({ key: userId, value: { name: "Alice" } })} disabled={loading}>
- *       {loading ? "Saving…" : "Save"}
- *     </button>
- *   );
- * }
- * ```
- *
- * ## Deleting data — `useDelete`
- *
- * ```tsx
- * import { useDelete } from "@arctics/flex-db-react";
- *
- * function DeleteButton({ itemKey }: { itemKey: string }) {
- *   const { execute, loading } = useDelete();
- *   return (
- *     <button onClick={() => execute({ key: itemKey })} disabled={loading}>
- *       {loading ? "Deleting…" : "Delete"}
- *     </button>
- *   );
+ *   return <button onClick={handleSubmit} disabled={loading}>Save</button>;
  * }
  * ```
  *
@@ -129,15 +89,7 @@
  * }
  * ```
  *
- * Use `useListHydrated` to receive full objects instead of just keys
- * (`limit` must be ≤ 50 — server constraint):
- *
- * ```tsx
- * const { data } = useListHydrated<User>({ limit: 20 });
- * data?.map(({ key, data: user }) => <UserCard key={key} user={user} />);
- * ```
- *
- * ## Reactive search — `useSearch` / `useSearchHydrated`
+ * ## Reactive search — `useSearch`
  *
  * ```tsx
  * import { useSearch } from "@arctics/flex-db-react";
@@ -165,27 +117,19 @@
  *
  * ## Error handling
  *
- * Every hook exposes an `error` field. You can narrow the type to access
- * HTTP status codes or network details:
- *
  * ```tsx
  * import { FlexDBError, FlexDBNetworkError } from "@arctics/flex-db-react";
  *
  * const { error } = useGet("some-key");
  *
  * if (error instanceof FlexDBError) {
- *   // HTTP error — inspect status code and raw server payload
- *   console.error(error.status, error.body);
+ *   if (error.code === "ERR_NOT_FOUND") console.error("Not found");
  * } else if (error instanceof FlexDBNetworkError) {
- *   // fetch() itself failed — DNS, connection refused, timeout, etc.
- *   console.error(error.cause);
+ *   console.error("Network error:", error.cause);
  * }
  * ```
  *
  * ## Escape hatch — direct client access
- *
- * For imperative logic outside the hook pattern, call `useFlexDB()` to obtain
- * the shared {@link FlexDBClient} instance directly:
  *
  * ```tsx
  * import { useFlexDB } from "@arctics/flex-db-react";
@@ -194,7 +138,7 @@
  *   const client = useFlexDB();
  *
  *   const handleAction = async () => {
- *     const { data } = await client.get<User>("abc123");
+ *     const { data } = await client.get<User>("abc123", { namespace: "users" });
  *     console.log(data.name);
  *   };
  * }
@@ -210,69 +154,83 @@
 
 // ── Provider & context ─────────────────────────────────────────────────────
 export { FlexDBProvider, useFlexDB } from "./src/context.tsx";
-export type { FlexDBProviderProps } from "./src/context.tsx";
+export type { FlexDBConfig, FlexDBProviderProps } from "./src/context.tsx";
 
 // ── Hooks ──────────────────────────────────────────────────────────────────
-export { useHealth } from "./src/hooks/useHealth.tsx";
-export { useGet } from "./src/hooks/useGet.tsx";
-export { useCreate } from "./src/hooks/useCreate.tsx";
-export { useSet } from "./src/hooks/useSet.tsx";
-export { useDelete } from "./src/hooks/useDelete.tsx";
-export { useUpdateOne } from "./src/hooks/useUpdateOne.tsx";
-export { useUpdate } from "./src/hooks/useUpdate.tsx";
-export { useList, useListHydrated } from "./src/hooks/useList.tsx";
-export { useSearch, useSearchHydrated } from "./src/hooks/useSearch.tsx";
-export { useBulkCreate } from "./src/hooks/useBulkCreate.tsx";
-export { useBulkSet } from "./src/hooks/useBulkSet.tsx";
-export { useBulkDelete } from "./src/hooks/useBulkDelete.tsx";
+export { useHealth }                           from "./src/hooks/useHealth.tsx";
+export { useGet }                              from "./src/hooks/useGet.tsx";
+export { useCreate }                           from "./src/hooks/useCreate.tsx";
+export { useSet }                              from "./src/hooks/useSet.tsx";
+export { useDelete }                           from "./src/hooks/useDelete.tsx";
+export { useList, useListHydrated }            from "./src/hooks/useList.tsx";
+export { useSearch, useSearchHydrated }        from "./src/hooks/useSearch.tsx";
+export { useBulkCreate }                       from "./src/hooks/useBulkCreate.tsx";
+export { useBulkSet }                          from "./src/hooks/useBulkSet.tsx";
+export { useBulkDelete }                       from "./src/hooks/useBulkDelete.tsx";
 
-// ── Core client (escape hatch) ─────────────────────────────────────────────
-export { FlexDBClient } from "./src/core/client.tsx";
+// ── Base SDK client (escape hatch) ─────────────────────────────────────────
+// Re-exported from @arctics/flex-db-sdk for direct use when hooks are not enough.
+export { FlexDBClient, NamespacedClient, createClient } from "@arctics/flex-db-sdk";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 export type {
   // Config
-  FlexDBConfig,
   RetryConfig,
+  FlexDBClientOptions,
+
+  // Operation options
+  OperationOptions,
+  CreateOptions,
+  SetOptions,
+  GetOptions,
+  DeleteOptions,
+  ListOptions,
+  SearchOptions,
 
   // Data shapes
   SearchParams,
-  SearchParamValue,
-  FilterOperators,
   Filters,
+  FilterOperators,
 
-  // Raw API responses
-  CreateResponse,
-  SetResponse,
-  GetResponse,
-  DeleteResponse,
-  UpdateOneResponse,
-  UpdateByFilterResponse,
-  BulkCreateResponse,
-  BulkSetResponse,
-  BulkDeleteResponse,
-  ListIdsResponse,
-  ListItemsResponse,
+  // Bulk operation items
+  BulkCreateItem,
+  BulkSetItem,
 
-  // Hook state shapes
+  // Results
+  HealthResult,
+  CreateResult,
+  SetResult,
+  GetResult,
+  DeleteResult,
+  ListIdsResult,
+  ListItemsResult,
+  BulkGetItem,
+  BulkGetResult,
+  BulkCreateResultItem,
+  BulkCreateResult,
+  BulkSetResultItem,
+  BulkSetResult,
+  BulkDeleteResult,
+
+  // React hook state shapes
   HookState,
   UseGetState,
   UseMutationState,
   PaginatedState,
 } from "./src/core/types.tsx";
 
-// ── Hook option types ──────────────────────────────────────────────────────
-export type { UseGetOptions } from "./src/hooks/useGet.tsx";
-export type { UseCreateOptions, CreateArgs } from "./src/hooks/useCreate.tsx";
-export type { UseSetOptions, SetArgs } from "./src/hooks/useSet.tsx";
-export type { UseDeleteOptions, DeleteArgs } from "./src/hooks/useDelete.tsx";
-export type { UseUpdateOneOptions, UpdateOneArgs } from "./src/hooks/useUpdateOne.tsx";
-export type { UseUpdateOptions, UpdateArgs } from "./src/hooks/useUpdate.tsx";
-export type { UseListOptions, UseListHydratedOptions } from "./src/hooks/useList.tsx";
+// ── Hook option and arg types ──────────────────────────────────────────────
+export type { UseHealthState }                           from "./src/hooks/useHealth.tsx";
+export type { UseGetOptions }                            from "./src/hooks/useGet.tsx";
+export type { UseCreateOptions, CreateArgs }             from "./src/hooks/useCreate.tsx";
+export type { UseSetOptions, SetArgs }                   from "./src/hooks/useSet.tsx";
+export type { UseDeleteOptions, DeleteArgs }             from "./src/hooks/useDelete.tsx";
+export type { UseListOptions, UseListHydratedOptions }   from "./src/hooks/useList.tsx";
 export type { UseSearchOptions, UseSearchHydratedOptions } from "./src/hooks/useSearch.tsx";
-export type { UseBulkCreateOptions, BulkCreateArgs } from "./src/hooks/useBulkCreate.tsx";
-export type { UseBulkSetOptions, BulkSetArgs } from "./src/hooks/useBulkSet.tsx";
-export type { UseBulkDeleteOptions, BulkDeleteArgs } from "./src/hooks/useBulkDelete.tsx";
+export type { UseBulkCreateOptions, BulkCreateArgs }     from "./src/hooks/useBulkCreate.tsx";
+export type { UseBulkSetOptions, BulkSetArgs }           from "./src/hooks/useBulkSet.tsx";
+export type { UseBulkDeleteOptions, BulkDeleteArgs }     from "./src/hooks/useBulkDelete.tsx";
 
 // ── Errors ─────────────────────────────────────────────────────────────────
-export { FlexDBError, FlexDBNetworkError } from "./src/core/types.tsx";
+// Re-exported from @arctics/flex-db-sdk — one authoritative source.
+export { FlexDBError, FlexDBNetworkError } from "@arctics/flex-db-sdk";

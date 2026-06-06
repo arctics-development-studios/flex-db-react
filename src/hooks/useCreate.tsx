@@ -6,14 +6,14 @@
 
 // ─────────────────────────────────────────────
 //  FlexDB React SDK · useCreate
-//  Mutation hook for creating items.
-//  Returns an `execute` function — call it on user action.
+//  Mutation hook for creating items with server-generated NanoID keys.
+//  Delegates to FlexDBClient.create() from @arctics/flex-db-sdk.
 // ─────────────────────────────────────────────
 
 import { useState, useCallback } from "react";
 
-import { useFlexDB }               from "../context.tsx";
-import type { SearchParams, UseMutationState, CreateResponse } from "../core/types.tsx";
+import { useFlexDB }                       from "../context.tsx";
+import type { SearchParams, CreateResult, UseMutationState } from "../core/types.tsx";
 
 /**
  * Options for {@link useCreate}.
@@ -31,43 +31,36 @@ export interface UseCreateOptions {
  */
 export interface CreateArgs {
   /**
-   * The data to store. Any JSON-serialisable object or value.
+   * The data to store. Any JSON-serialisable value.
    *
    * @example
    * ```ts
-   * { name: "Alice", age: 30, roles: ["admin"] }
+   * { name: "Alice", age: 30 }
    * ```
    */
-  value:         unknown;
+  value:  unknown;
   /**
-   * Fields to index for future {@link useSearch} / {@link useSearchHydrated} calls.
-   *
-   * These are stored **separately** from `value` and power all filter queries.
-   * Only the fields you list here are queryable — unlisted fields are stored
-   * but not indexed.
+   * Fields to index as searchable properties (`sp`).
+   * These power all {@link useSearch} / {@link useSearchHydrated} queries.
+   * Only listed fields are queryable — values must be string, number, or boolean.
    *
    * @example
    * ```ts
-   * searchParams: { age: 30, role: "admin", inStock: true }
+   * sp: { age: 30, role: "admin" }
    * ```
    */
-  searchParams?: SearchParams;
+  sp?: SearchParams;
 }
 
 /**
  * Mutation hook for creating a new item with a **server-generated** NanoID key.
  *
- * Returns an `execute` function you call in response to a user action (form
- * submit, button click, etc.). All state — `data`, `loading`, `error` — updates
- * automatically so your UI re-renders with the result.
+ * Returns an `execute` function you call in response to a user action. All
+ * state — `data`, `loading`, `error` — updates automatically so your UI
+ * re-renders with the result.
  *
- * The `execute` function is memoised with `useCallback` and is stable across
- * renders — safe to use as an effect dependency or to pass as a prop.
- *
- * After a successful call, `data.key` holds the server-generated key. Store it
- * if you need to retrieve or delete the item later.
- *
- * To upsert at a **caller-supplied** key instead, use {@link useSet}.
+ * `execute` returns {@link CreateResult} with the server-generated `key`.
+ * Store it — it is the only way to retrieve or delete this item later.
  *
  * @param options - Optional namespace override. See {@link UseCreateOptions}.
  * @returns {@link UseMutationState} with `execute`, `reset`, `data`, `loading`, and `error`.
@@ -79,58 +72,21 @@ export interface CreateArgs {
  * function CreateUserForm() {
  *   const { execute, loading, data, error } = useCreate({ namespace: "users" });
  *
- *   const handleSubmit = async (formData: UserForm) => {
- *     const result = await execute({
- *       value:        { name: formData.name, age: formData.age },
- *       searchParams: { age: formData.age, role: formData.role },
+ *   const handleSubmit = async (form: UserForm) => {
+ *     const { key } = await execute({
+ *       value: { name: form.name, age: form.age },
+ *       sp:    { age: form.age, role: form.role },
  *     });
- *     console.log("Created with key:", result.key);
+ *     console.log("Created with key:", key);
  *   };
- *
- *   return (
- *     <form onSubmit={e => { e.preventDefault(); handleSubmit(...); }}>
- *       {error && <p className="error">{error.message}</p>}
- *       {data  && <p className="success">Saved! Key: {data.key}</p>}
- *       <button type="submit" disabled={loading}>
- *         {loading ? "Saving…" : "Save"}
- *       </button>
- *     </form>
- *   );
- * }
- * ```
- *
- * @example Indexing fields for search
- * ```tsx
- * const { execute } = useCreate({ namespace: "products" });
- *
- * // Index price, category, and inStock so they can be filtered later
- * await execute({
- *   value:        { title: "Widget Pro", price: 49.99, category: "electronics" },
- *   searchParams: { price: 49.99, category: "electronics", inStock: true },
- * });
- * ```
- *
- * @example Resetting the form after success
- * ```tsx
- * function CreateUserForm() {
- *   const { execute, reset, data, loading, error } = useCreate({ namespace: "users" });
- *
- *   const handleSubmit = async (formData: UserForm) => {
- *     await execute({ value: formData });
- *   };
- *
- *   // Show a success message, then reset after 2 s
- *   useEffect(() => {
- *     if (!data) return;
- *     const t = setTimeout(reset, 2000);
- *     return () => clearTimeout(t);
- *   }, [data, reset]);
  *
  *   return (
  *     <>
- *       {data    && <p>✓ Saved as {data.key}</p>}
- *       {error   && <p>✗ {error.message}</p>}
- *       <button onClick={handleSubmit} disabled={loading}>Save</button>
+ *       {error && <p className="error">{error.message}</p>}
+ *       {data  && <p>Saved! Key: {data.key}</p>}
+ *       <button onClick={handleSubmit} disabled={loading}>
+ *         {loading ? "Saving…" : "Save"}
+ *       </button>
  *     </>
  *   );
  * }
@@ -138,20 +94,20 @@ export interface CreateArgs {
  */
 export function useCreate(
   options?: UseCreateOptions,
-): UseMutationState<CreateArgs, CreateResponse> {
+): UseMutationState<CreateArgs, CreateResult> {
   const client    = useFlexDB();
   const namespace = options?.namespace;
 
-  const [data,    setData]    = useState<CreateResponse | null>(null);
+  const [data,    setData]    = useState<CreateResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState<UseMutationState<CreateArgs, CreateResponse>["error"]>(null);
+  const [error,   setError]   = useState<UseMutationState<CreateArgs, CreateResult>["error"]>(null);
 
   const execute = useCallback(
-    async (args: CreateArgs): Promise<CreateResponse> => {
+    async (args: CreateArgs): Promise<CreateResult> => {
       setLoading(true);
       setError(null);
       try {
-        const result = await client.create(args.value, namespace, args.searchParams);
+        const result = await client.create(args.value, { namespace, sp: args.sp });
         setData(result);
         return result;
       } catch (err) {

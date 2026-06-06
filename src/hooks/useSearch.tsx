@@ -9,11 +9,12 @@
 //  Reactive search hooks with filter support and pagination.
 //  Re-runs automatically when filters change.
 //  In-flight requests are cancelled on unmount and on new fetch.
+//  Delegates to FlexDBClient.search() from @arctics/flex-db-sdk.
 // ─────────────────────────────────────────────
 
 import { useState, useCallback, useRef, useEffect } from "react";
 
-import { useFlexDB }                from "../context.tsx";
+import { useFlexDB }                   from "../context.tsx";
 import type { Filters, PaginatedState } from "../core/types.tsx";
 
 /**
@@ -26,18 +27,13 @@ export interface UseSearchOptions {
    */
   namespace?: string;
   /**
-   * Number of item keys to return per page.
-   * Max 100.
-   * @default 20
+   * Number of item keys to return per page. Max 1000.
+   * @default 50
    */
   limit?: number;
   /**
    * When `false`, the hook will **not** auto-run on mount or when `filters`
    * changes. Call `fetch()` manually to trigger the first search.
-   *
-   * Useful when you want to gate the search on a button press rather than
-   * running it on every keystroke.
-   *
    * @default true
    */
   enabled?: boolean;
@@ -48,101 +44,54 @@ export interface UseSearchOptions {
  *
  * - **Reactive** — re-runs automatically when the `filters` reference changes.
  * - **Paginated** — `fetchMore()` appends the next page to `data`.
- * - **Stable** — `data` accumulates across `fetchMore` calls without resetting.
- * - **Cancels** the in-flight request on unmount and whenever a new fetch
- *   supersedes the previous one (e.g. rapid filter changes).
+ * - **Cancels** in-flight requests on unmount and when superseded by a new fetch.
  *
  * ### Stabilising filters
  *
- * The hook watches the `filters` argument using reference equality.
- * A new object on every render will trigger a new search on every render.
+ * The hook watches the `filters` argument by reference equality.
  * Always stabilise the filter object with `useMemo`:
  *
  * ```tsx
- * // ✅ Stable — only re-runs when minPrice changes
+ * // ✅ Only re-runs when minPrice changes
  * const filters = useMemo(() => ({ price: { gte: minPrice } }), [minPrice]);
  *
- * // ❌ Unstable — new object on every render = search on every render
+ * // ❌ New object on every render = search on every render
  * const filters = { price: { gte: minPrice } };
  * ```
  *
- * Items must have been written with `searchParams` for the queried fields to
- * be available. See {@link useCreate} and {@link useSet}.
- *
- * When you need full item objects instead of just keys, use
- * {@link useSearchHydrated} (limit must be ≤ 50).
+ * Items must have been written with `sp` for the queried fields to be available.
+ * See {@link useCreate} and {@link useSet}.
  *
  * @param filters - Filter predicates evaluated server-side. See {@link Filters}.
- * @param options - Namespace, page size, and enabled flag. See {@link UseSearchOptions}.
+ * @param options - Namespace, page size, and enabled flag.
  * @returns {@link PaginatedState} with `data`, `loading`, `error`, `hasMore`, `fetch`, and `fetchMore`.
  *
- * @example Reactive product search with a price filter
+ * @example Reactive product search with price filter
  * ```tsx
  * import { useSearch } from "@arctics/flex-db-react";
  *
  * function ProductSearch() {
  *   const [minPrice, setMinPrice] = useState(0);
  *
- *   // Stabilise with useMemo — prevents re-fetch on every render
  *   const filters = useMemo(() => ({
  *     price:    { gte: minPrice },
  *     category: { eq: "electronics" },
  *   }), [minPrice]);
  *
- *   const { data, loading, error, hasMore, fetchMore } = useSearch(filters, {
+ *   const { data, loading, hasMore, fetchMore } = useSearch(filters, {
  *     namespace: "products",
  *     limit:     20,
  *   });
  *
  *   return (
  *     <>
- *       <input
- *         type="number"
- *         value={minPrice}
- *         onChange={e => setMinPrice(Number(e.target.value))}
- *         placeholder="Min price"
- *       />
- *       {error && <p className="error">{error.message}</p>}
- *       <ul>
- *         {data?.map(id => <li key={id}>{id}</li>)}
- *       </ul>
+ *       <input type="number" value={minPrice} onChange={e => setMinPrice(+e.target.value)} />
+ *       <ul>{data?.map(id => <li key={id}>{id}</li>)}</ul>
  *       {loading && <Spinner />}
  *       {hasMore  && <button onClick={fetchMore}>Load more</button>}
  *     </>
  *   );
  * }
- * ```
- *
- * @example Search triggered by a button press (`enabled: false`)
- * ```tsx
- * function SearchOnDemand() {
- *   const [query, setQuery] = useState("");
- *   const filters = useMemo(() => ({ name: { sw: query } }), [query]);
- *
- *   const { data, fetch, loading } = useSearch(filters, {
- *     namespace: "users",
- *     enabled:   false, // don't auto-search — wait for the button
- *   });
- *
- *   return (
- *     <>
- *       <input value={query} onChange={e => setQuery(e.target.value)} />
- *       <button onClick={fetch} disabled={loading}>Search</button>
- *       <ul>{data?.map(id => <li key={id}>{id}</li>)}</ul>
- *     </>
- *   );
- * }
- * ```
- *
- * @example Combining multiple filters
- * ```tsx
- * const filters = useMemo(() => ({
- *   price:    { gte: 10, lte: 100 },    // range
- *   category: { eq: "books" },          // exact match
- *   inStock:  { eq: true },             // boolean
- *   sku:      { sw: "BOOK-" },          // starts with
- *   discount: { ex: true },             // field must exist
- * }), []);
  * ```
  */
 export function useSearch(
@@ -160,7 +109,6 @@ export function useSearch(
   const [cursor,  setCursor]  = useState<string | undefined>(undefined);
   const [hasMore, setHasMore] = useState(false);
 
-  // Always read latest values in callbacks without adding to dep arrays
   const cursorRef    = useRef<string | undefined>(undefined);
   cursorRef.current  = cursor;
   const filtersRef   = useRef(filters);
@@ -169,14 +117,9 @@ export function useSearch(
   nsRef.current      = namespace;
   const limitRef     = useRef(limit);
   limitRef.current   = limit;
-
-  // Holds the AbortController for the currently in-flight request.
-  const abortRef = useRef<AbortController | null>(null);
-
-  // ── Fetch first page ───────────────────────────────────────────────────────
+  const abortRef     = useRef<AbortController | null>(null);
 
   const fetch = useCallback(async () => {
-    // Cancel any previous in-flight request before starting a new one
     abortRef.current?.abort();
     const controller  = new AbortController();
     abortRef.current  = controller;
@@ -185,7 +128,7 @@ export function useSearch(
     setError(null);
 
     try {
-      const response = await client.search({
+      const result = await client.search({
         filters:   filtersRef.current,
         namespace: nsRef.current,
         limit:     limitRef.current,
@@ -194,20 +137,16 @@ export function useSearch(
         signal:    controller.signal,
       });
 
-      setData(response.keys);
-      setCursor(response.cursor);
-      setHasMore(!!response.cursor);
+      setData(result.keys);
+      setCursor(result.cursor ?? undefined);
+      setHasMore(result.cursor !== null);
     } catch (err) {
-      // Deliberate cancellation — do not surface as an error
       if (err instanceof Error && err.name === "AbortError") return;
       setError(err as Error);
     } finally {
-      // Only clear loading if this request was not superseded by a newer one
       if (!controller.signal.aborted) setLoading(false);
     }
   }, [client]);
-
-  // ── Fetch next page (append) ───────────────────────────────────────────────
 
   const fetchMore = useCallback(async () => {
     if (!cursorRef.current) return;
@@ -220,7 +159,7 @@ export function useSearch(
     setError(null);
 
     try {
-      const response = await client.search({
+      const result = await client.search({
         filters:   filtersRef.current,
         namespace: nsRef.current,
         limit:     limitRef.current,
@@ -229,9 +168,9 @@ export function useSearch(
         signal:    controller.signal,
       });
 
-      setData((prev: string[] | null) => [...(prev ?? []), ...response.keys]);
-      setCursor(response.cursor);
-      setHasMore(!!response.cursor);
+      setData((prev: string[] | null) => [...(prev ?? []), ...result.keys]);
+      setCursor(result.cursor ?? undefined);
+      setHasMore(result.cursor !== null);
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") return;
       setError(err as Error);
@@ -240,9 +179,7 @@ export function useSearch(
     }
   }, [client]);
 
-  // ── Re-run when filters change; cancel on unmount ─────────────────────────
-  // filters is intentionally in the dep array — changing filters resets to page 1.
-  // Consumers should stabilise with useMemo to avoid unnecessary re-fetches.
+  // filters is intentionally in the dep array — changing filters resets to page 1
   useEffect(() => {
     if (!enabled) return;
     fetch();
@@ -255,7 +192,6 @@ export function useSearch(
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  useSearchHydrated
-//  Same as useSearch but returns full objects. Requires limit <= 50.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -269,8 +205,8 @@ export interface UseSearchHydratedOptions {
   namespace?: string;
   /**
    * Number of full objects to return per page.
-   * **Maximum 50** — a server constraint for hydrated responses (`?full=true` is
-   * silently ignored when `limit` > 50). Values above 50 are silently clamped to 50.
+   * **Maximum 50** — server constraint for hydrated responses.
+   * Values above 50 are silently clamped to 50.
    * @default 20
    */
   limit?: number;
@@ -286,89 +222,54 @@ export interface UseSearchHydratedOptions {
  * Searches items and returns their **full data objects** (not just keys).
  *
  * Identical behaviour to {@link useSearch} but each page item is
- * `{ key: string; data: T | null }` instead of a bare string key.
+ * `{ key: string; data: T }` instead of a bare string key.
  *
  * The server only supports full-object hydration when `limit` ≤ 50.
  * Values above 50 are **silently clamped** to 50.
  *
- * In-flight requests are cancelled on unmount and whenever a new fetch
- * supersedes the previous one, preventing stale responses from overwriting
- * current results when filters change rapidly.
- *
- * Like {@link useSearch}, the `filters` argument is watched by reference —
- * always stabilise it with `useMemo` to avoid unnecessary re-fetches.
- *
- * Supply the data type as a generic parameter for a fully-typed `data` field:
- * ```tsx
- * const { data } = useSearchHydrated<Product>(filters);
- * // data is `{ key: string; data: Product | null }[] | null`
- * ```
+ * Like {@link useSearch}, always stabilise `filters` with `useMemo`.
  *
  * @param filters - Filter predicates evaluated server-side. See {@link Filters}.
- * @param options - Namespace, page size (max 50), and enabled flag. See {@link UseSearchHydratedOptions}.
- * @returns {@link PaginatedState} where each item is `{ key: string; data: T | null }`.
+ * @param options - Namespace, page size (max 50), and enabled flag.
+ * @returns {@link PaginatedState} where each item is `{ key: string; data: T }`.
  *
  * @example Render search results as cards with full data
  * ```tsx
  * import { useSearchHydrated } from "@arctics/flex-db-react";
  *
- * interface Product { title: string; price: number; imageUrl: string; }
+ * interface Product { title: string; price: number; }
  *
  * function ProductGrid() {
- *   const [category, setCategory] = useState("all");
+ *   const filters = useMemo(() => ({ category: { eq: "books" } }), []);
  *
- *   const filters = useMemo(() => (
- *     category === "all" ? {} : { category: { eq: category } }
- *   ), [category]);
- *
- *   const { data, loading, hasMore, fetchMore } = useSearchHydrated<Product>(filters, {
+ *   const { data, hasMore, fetchMore } = useSearchHydrated<Product>(filters, {
  *     namespace: "products",
  *     limit:     12,
  *   });
  *
  *   return (
  *     <>
- *       <select value={category} onChange={e => setCategory(e.target.value)}>
- *         <option value="all">All</option>
- *         <option value="electronics">Electronics</option>
- *         <option value="books">Books</option>
- *       </select>
- *       <div className="grid">
- *         {data?.map(({ key, data: product }) =>
- *           product
- *             ? <ProductCard key={key} product={product} />
- *             : <DeletedPlaceholder key={key} />
- *         )}
- *       </div>
- *       {loading && <Spinner />}
- *       {hasMore  && <button onClick={fetchMore}>Load more</button>}
+ *       {data?.map(({ key, data: product }) => (
+ *         <ProductCard key={key} product={product} />
+ *       ))}
+ *       {hasMore && <button onClick={fetchMore}>Load more</button>}
  *     </>
  *   );
  * }
- * ```
- *
- * @example Empty-state handling
- * ```tsx
- * const { data, loading } = useSearchHydrated<User>(filters, { namespace: "users" });
- *
- * if (loading)          return <Spinner />;
- * if (!data?.length)    return <p>No results found.</p>;
- *
- * return data.map(({ key, data: user }) => <UserCard key={key} user={user} />);
  * ```
  */
 export function useSearchHydrated<T = unknown>(
   filters:  Filters,
   options?: UseSearchHydratedOptions,
-): PaginatedState<{ key: string; data: T | null }> {
+): PaginatedState<{ key: string; data: T }> {
   const client    = useFlexDB();
   const namespace = options?.namespace;
-  const limit     = Math.min(options?.limit ?? 20, 50); // enforce server cap (limit ≤ 50 for hydrated)
+  const limit     = Math.min(options?.limit ?? 20, 50);
   const enabled   = options?.enabled ?? true;
 
-  const [data,    setData]    = useState<{ key: string; data: T | null }[] | null>(null);
+  const [data,    setData]    = useState<{ key: string; data: T }[] | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState<PaginatedState<{ key: string; data: T | null }>["error"]>(null);
+  const [error,   setError]   = useState<PaginatedState<{ key: string; data: T }>["error"]>(null);
   const [cursor,  setCursor]  = useState<string | undefined>(undefined);
   const [hasMore, setHasMore] = useState(false);
 
@@ -388,7 +289,7 @@ export function useSearchHydrated<T = unknown>(
     setLoading(true);
     setError(null);
     try {
-      const response = await client.search<T>({
+      const result = await client.search<T>({
         filters:   filtersRef.current,
         namespace: nsRef.current,
         limit,
@@ -396,9 +297,10 @@ export function useSearchHydrated<T = unknown>(
         hydrate:   true,
         signal:    controller.signal,
       });
-      setData(response.keys);
-      setCursor(response.cursor);
-      setHasMore(!!response.cursor);
+      // Base SDK returns `items` (not `keys`) for hydrated responses
+      setData(result.items);
+      setCursor(result.cursor ?? undefined);
+      setHasMore(result.cursor !== null);
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") return;
       setError(err as Error);
@@ -417,7 +319,7 @@ export function useSearchHydrated<T = unknown>(
     setLoading(true);
     setError(null);
     try {
-      const response = await client.search<T>({
+      const result = await client.search<T>({
         filters:   filtersRef.current,
         namespace: nsRef.current,
         limit,
@@ -425,9 +327,10 @@ export function useSearchHydrated<T = unknown>(
         hydrate:   true,
         signal:    controller.signal,
       });
-      setData((prev: { key: string; data: T | null }[] | null) => [...(prev ?? []), ...response.keys]);
-      setCursor(response.cursor);
-      setHasMore(!!response.cursor);
+      // Base SDK returns `items` (not `keys`) for hydrated responses
+      setData((prev) => [...(prev ?? []), ...result.items]);
+      setCursor(result.cursor ?? undefined);
+      setHasMore(result.cursor !== null);
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") return;
       setError(err as Error);

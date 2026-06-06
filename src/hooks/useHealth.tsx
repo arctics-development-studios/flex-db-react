@@ -6,14 +6,14 @@
 
 // ─────────────────────────────────────────────
 //  FlexDB React SDK · useHealth
-//  Checks service liveness. Useful for status indicators
-//  and connection debugging during development.
+//  Pings the service on mount. No auth required.
+//  Delegates to FlexDBClient.health() from @arctics/flex-db-sdk.
 // ─────────────────────────────────────────────
 
 import { useState, useEffect, useCallback, useRef } from "react";
 
-import { useFlexDB }     from "../context.tsx";
-import type { HookState } from "../core/types.tsx";
+import { useFlexDB }      from "../context.tsx";
+import type { HealthResult, HookState } from "../core/types.tsx";
 
 /**
  * State returned by {@link useHealth}.
@@ -21,7 +21,7 @@ import type { HookState } from "../core/types.tsx";
  * Extends {@link HookState} with a `refetch` function for polling or
  * manual re-checks.
  */
-export interface UseHealthState extends HookState<{ status: string }> {
+export interface UseHealthState extends HookState<HealthResult> {
   /**
    * Manually re-pings the service.
    * Call this to re-check after an error, or to implement a periodic poll.
@@ -38,9 +38,6 @@ export interface UseHealthState extends HookState<{ status: string }> {
  * - `error` is set when the service is unreachable or returns an error status.
  * - Call `refetch()` to re-ping on demand (e.g. after recovering from offline).
  *
- * Useful for connection status badges, health-check pages, and debugging
- * provider configuration during development.
- *
  * @returns {@link UseHealthState} with `data`, `loading`, `error`, and `refetch`.
  *
  * @example Connection status badge
@@ -53,20 +50,6 @@ export interface UseHealthState extends HookState<{ status: string }> {
  *   if (loading) return <span>Checking…</span>;
  *   if (error)   return <span style={{ color: "red" }}>⚠ Offline</span>;
  *   return <span style={{ color: "green" }}>✓ {data?.status}</span>;
- * }
- * ```
- *
- * @example Manual refresh button
- * ```tsx
- * function HealthCheck() {
- *   const { data, loading, error, refetch } = useHealth();
- *
- *   return (
- *     <div>
- *       <p>Status: {loading ? "…" : error ? "offline" : data?.status}</p>
- *       <button onClick={refetch} disabled={loading}>Re-check</button>
- *     </div>
- *   );
  * }
  * ```
  *
@@ -87,28 +70,25 @@ export interface UseHealthState extends HookState<{ status: string }> {
 export function useHealth(): UseHealthState {
   const client = useFlexDB();
 
-  const [data,    setData]    = useState<{ status: string } | null>(null);
+  const [data,    setData]    = useState<HealthResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState<UseHealthState["error"]>(null);
 
-  const abortRef = useRef<AbortController | null>(null);
+  // Tracks mount state so we never call setState after unmount
+  const mountedRef = useRef(false);
 
   const refetch = useCallback(() => {
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
     setLoading(true);
     setError(null);
 
-    client.health(controller.signal).then(
+    client.health().then(
       (result) => {
-        if (controller.signal.aborted) return;
+        if (!mountedRef.current) return;
         setData(result);
         setLoading(false);
       },
       (err: unknown) => {
-        if (err instanceof Error && err.name === "AbortError") return;
+        if (!mountedRef.current) return;
         setError(err as Error);
         setLoading(false);
       },
@@ -116,8 +96,9 @@ export function useHealth(): UseHealthState {
   }, [client]);
 
   useEffect(() => {
+    mountedRef.current = true;
     refetch();
-    return () => { abortRef.current?.abort(); };
+    return () => { mountedRef.current = false; };
   }, [refetch]);
 
   return { data, loading, error, refetch };

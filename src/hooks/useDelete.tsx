@@ -7,12 +7,13 @@
 // ─────────────────────────────────────────────
 //  FlexDB React SDK · useDelete
 //  Mutation hook for deleting items by key.
+//  Delegates to FlexDBClient.delete() from @arctics/flex-db-sdk.
 // ─────────────────────────────────────────────
 
 import { useState, useCallback } from "react";
 
-import { useFlexDB }               from "../context.tsx";
-import type { UseMutationState, DeleteResponse } from "../core/types.tsx";
+import { useFlexDB }                         from "../context.tsx";
+import type { DeleteResult, UseMutationState } from "../core/types.tsx";
 
 /**
  * Options for {@link useDelete}.
@@ -40,10 +41,8 @@ export interface DeleteArgs {
  * Mutation hook for **permanently removing** an item from FlexDB.
  *
  * Deletion is **irreversible** — both the item data and its search index
- * entries are removed. There is no soft-delete or recycle bin.
- *
- * The `execute` function is memoised with `useCallback` and is stable across
- * renders — safe to pass as a prop or use as an effect dependency.
+ * entries are removed. The server always returns success even if the key did
+ * not exist (idempotent).
  *
  * @param options - Optional namespace override. See {@link UseDeleteOptions}.
  * @returns {@link UseMutationState} with `execute`, `reset`, `data`, `loading`, and `error`.
@@ -66,28 +65,7 @@ export interface DeleteArgs {
  * }
  * ```
  *
- * @example Confirm before deleting
- * ```tsx
- * function DeleteUserButton({ userId }: { userId: string }) {
- *   const { execute, loading, error } = useDelete({ namespace: "users" });
- *
- *   const handleDelete = () => {
- *     if (!confirm("Permanently delete this user?")) return;
- *     execute({ key: userId });
- *   };
- *
- *   return (
- *     <>
- *       {error && <p>{error.message}</p>}
- *       <button onClick={handleDelete} disabled={loading}>
- *         {loading ? "Deleting…" : "Delete user"}
- *       </button>
- *     </>
- *   );
- * }
- * ```
- *
- * @example Optimistic UI — remove from local list immediately
+ * @example Refresh a list after deletion
  * ```tsx
  * function UserList() {
  *   const { data: ids, fetch } = useList({ namespace: "users" });
@@ -95,7 +73,7 @@ export interface DeleteArgs {
  *
  *   const handleDelete = async (key: string) => {
  *     await execute({ key });
- *     fetch(); // refresh the list after deletion
+ *     fetch(); // reload the list
  *   };
  *
  *   return (
@@ -113,20 +91,20 @@ export interface DeleteArgs {
  */
 export function useDelete(
   options?: UseDeleteOptions,
-): UseMutationState<DeleteArgs, DeleteResponse> {
+): UseMutationState<DeleteArgs, DeleteResult> {
   const client    = useFlexDB();
   const namespace = options?.namespace;
 
-  const [data,    setData]    = useState<DeleteResponse | null>(null);
+  const [data,    setData]    = useState<DeleteResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState<UseMutationState<DeleteArgs, DeleteResponse>["error"]>(null);
+  const [error,   setError]   = useState<UseMutationState<DeleteArgs, DeleteResult>["error"]>(null);
 
   const execute = useCallback(
-    async (args: DeleteArgs): Promise<DeleteResponse> => {
+    async (args: DeleteArgs): Promise<DeleteResult> => {
       setLoading(true);
       setError(null);
       try {
-        const result = await client.delete(args.key, namespace);
+        const result = await client.delete(args.key, { namespace });
         setData(result);
         return result;
       } catch (err) {

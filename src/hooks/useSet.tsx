@@ -7,12 +7,13 @@
 // ─────────────────────────────────────────────
 //  FlexDB React SDK · useSet
 //  Mutation hook for upserting items at a caller-supplied key.
+//  Delegates to FlexDBClient.set() from @arctics/flex-db-sdk.
 // ─────────────────────────────────────────────
 
 import { useState, useCallback } from "react";
 
-import { useFlexDB }             from "../context.tsx";
-import type { SearchParams, UseMutationState, SetResponse } from "../core/types.tsx";
+import { useFlexDB }                      from "../context.tsx";
+import type { SearchParams, SetResult, UseMutationState } from "../core/types.tsx";
 
 /**
  * Options for {@link useSet}.
@@ -31,34 +32,24 @@ export interface UseSetOptions {
 export interface SetArgs {
   /**
    * The key to store the item under.
-   * Any non-empty string is valid. If the key already exists, the stored
-   * value is **replaced entirely** — this is not a partial patch.
+   * If the key already exists, the stored value is **fully replaced**.
+   */
+  key:   string;
+  /**
+   * The data to store. Any JSON-serialisable value.
+   * Fully replaces any previously stored value.
+   */
+  value: unknown;
+  /**
+   * Fields to index as searchable properties (`sp`).
+   * Fully replaces the previously stored search params for this key.
    *
    * @example
    * ```ts
-   * key: "user-42"          // your own ID scheme
-   * key: crypto.randomUUID() // UUID
+   * sp: { age: 26, role: "admin" }
    * ```
    */
-  key:           string;
-  /**
-   * The data to store. Any JSON-serialisable object or value.
-   * Replaces the full stored value if the key already exists.
-   */
-  value:         unknown;
-  /**
-   * Fields to index for future {@link useSearch} / {@link useSearchHydrated} calls.
-   *
-   * These are stored **separately** from `value` and power all filter queries.
-   * Updating `searchParams` on a re-write fully replaces the previous index
-   * entries for this key.
-   *
-   * @example
-   * ```ts
-   * searchParams: { age: 26, role: "admin" }
-   * ```
-   */
-  searchParams?: SearchParams;
+  sp?: SearchParams;
 }
 
 /**
@@ -67,14 +58,9 @@ export interface SetArgs {
  *
  * - If the key does **not** exist, a new item is created.
  * - If the key **already** exists, the stored value is replaced entirely.
- *   This is not a partial update — pass the full object every time.
+ *   Pass the full object every time — this is not a partial update.
  *
- * Use {@link useSet} when you control the key (e.g. storing a record under a
- * user's UUID or a human-readable slug). For server-generated keys, use
- * {@link useCreate} instead.
- *
- * The `execute` function is memoised with `useCallback` and is stable across
- * renders — safe to pass as a prop or use as an effect dependency.
+ * Use {@link useCreate} when you want the server to generate the key.
  *
  * @param options - Optional namespace override. See {@link UseSetOptions}.
  * @returns {@link UseMutationState} with `execute`, `reset`, `data`, `loading`, and `error`.
@@ -86,61 +72,36 @@ export interface SetArgs {
  * function EditUserForm({ userId }: { userId: string }) {
  *   const { execute, loading, error } = useSet({ namespace: "users" });
  *
- *   const handleSave = (formData: UserForm) =>
- *     execute({
- *       key:          userId,
- *       value:        { name: formData.name, age: formData.age },
- *       searchParams: { age: formData.age, role: formData.role },
- *     });
- *
  *   return (
  *     <>
  *       {error && <p className="error">{error.message}</p>}
- *       <button onClick={() => handleSave(...)} disabled={loading}>
+ *       <button
+ *         onClick={() => execute({ key: userId, value: { name: "Alice", age: 31 } })}
+ *         disabled={loading}
+ *       >
  *         {loading ? "Saving…" : "Save"}
  *       </button>
  *     </>
  *   );
  * }
  * ```
- *
- * @example Idempotent write — safe to call multiple times
- * ```tsx
- * const { execute } = useSet({ namespace: "settings" });
- *
- * // Writing the same key twice is safe — second call just overwrites
- * await execute({ key: "theme", value: { mode: "dark" } });
- * await execute({ key: "theme", value: { mode: "light" } });
- * // Stored value is now { mode: "light" }
- * ```
- *
- * @example Resetting after success
- * ```tsx
- * const { execute, reset, data } = useSet({ namespace: "users" });
- *
- * useEffect(() => {
- *   if (!data) return;
- *   const t = setTimeout(reset, 2000); // clear success state after 2 s
- *   return () => clearTimeout(t);
- * }, [data, reset]);
- * ```
  */
 export function useSet(
   options?: UseSetOptions,
-): UseMutationState<SetArgs, SetResponse> {
+): UseMutationState<SetArgs, SetResult> {
   const client    = useFlexDB();
   const namespace = options?.namespace;
 
-  const [data,    setData]    = useState<SetResponse | null>(null);
+  const [data,    setData]    = useState<SetResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState<UseMutationState<SetArgs, SetResponse>["error"]>(null);
+  const [error,   setError]   = useState<UseMutationState<SetArgs, SetResult>["error"]>(null);
 
   const execute = useCallback(
-    async (args: SetArgs): Promise<SetResponse> => {
+    async (args: SetArgs): Promise<SetResult> => {
       setLoading(true);
       setError(null);
       try {
-        const result = await client.set(args.key, args.value, namespace, args.searchParams);
+        const result = await client.set(args.key, args.value, { namespace, sp: args.sp });
         setData(result);
         return result;
       } catch (err) {
