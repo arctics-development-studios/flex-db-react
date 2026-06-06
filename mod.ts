@@ -12,7 +12,7 @@
  * // deno.json
  * {
  *   "imports": {
- *     "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^3.0.0",
+ *     "@arctics/flex-db-react": "jsr:@arctics/flex-db-react@^2.6.2",
  *     "react": "npm:react@^18.0.0"
  *   }
  * }

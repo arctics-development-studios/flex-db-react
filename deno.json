@@ -1,6 +1,6 @@
 {
   "name": "@arctics/flex-db-react",
-  "version": "2.6.1",
+  "version": "2.6.2",
   "exports": "./mod.ts",
   "license": "Apache-2.0",
   "publish": {
